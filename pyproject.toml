@@ -1,0 +1,22 @@
+# Choosing a build backend: 
+requires = ["setuptools"] 
+build-backend = "setuptools.build_meta" 
+
+[project]
+name = "transformers"
+version = "0.0.1"
+description = "Project to study the self attention mechanism in transformers."
+authors = [
+    { name = "Cristopher Erazo", email = "cerazova@sissa.it" }
+]
+dynamic = ["dependencies"] 
+
+[tool.setuptools.packages.find] 
+where = ["src"] 
+exclude = ["scripts", "shell","notebooks"] 
+
+[tool.setuptools.dynamic] 
+dependencies = { file = ["requirements.txt"] } 
+
+[project.optional-dependencies] 
+test = ["pytest"]

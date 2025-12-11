@@ -1,0 +1,7 @@
+__pycache__/
+.python-version
+.venv/
+env/
+.dat
+log/
+logs/
