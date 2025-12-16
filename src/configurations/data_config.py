@@ -5,6 +5,14 @@ import inspect
 import pickle
 from datetime import datetime
 import subprocess
+import yaml
+
+def read_config(file):
+	filepath = os.path.abspath(f'{file}.yaml')
+	print(filepath)
+	with open(filepath,	'r') as stream:
+		kwargs = yaml.safe_load(stream)
+	return kwargs
 
 def sanitize(v):
     "Round float values to 4 digits"

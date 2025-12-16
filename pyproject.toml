@@ -3,17 +3,15 @@ requires = ["setuptools"]
 build-backend = "setuptools.build_meta" 
 
 [project]
-name = "transformers"
+name = "attention_nn"
 version = "0.0.1"
 description = "Project to study the self attention mechanism in transformers."
-authors = [
-    { name = "Cristopher Erazo", email = "cerazova@sissa.it" }
-]
+authors = [{ name = "Cristopher Erazo", email = "cerazova@sissa.it" }]
 dynamic = ["dependencies"] 
 
 [tool.setuptools.packages.find] 
 where = ["src"] 
-exclude = ["scripts", "shell","notebooks"] 
+exclude = ["scripts", "shell","notebooks","experiments"] 
 
 [tool.setuptools.dynamic] 
 dependencies = { file = ["requirements.txt"] } 

@@ -1,0 +1,14 @@
+datasource : 'roneneldan/TinyStories'
+dataset_size : 300
+train_fraction : 0.9
+batch_size : 4
+seq_len : 256
+d_model : 128
+dropout : 0.01
+rank : 64
+num_epochs : 100
+lr : 1.0e-5
+experiment_name : 'logs/simple_experiment'
+model_folder : 'logs/weights'
+model_filename : 'simple_transformer'
+preload : 'latest'

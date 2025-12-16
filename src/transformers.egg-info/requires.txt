@@ -1,6 +1,0 @@
-numpy
-matplotlib
-pytest
-
-[test]
-pytest

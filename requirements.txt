@@ -1,3 +1,8 @@
 numpy
+torch
+torchvision
+datasets
+tqdm
+numpy
 matplotlib
-pytest
+tokenizers
