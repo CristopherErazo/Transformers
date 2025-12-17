@@ -21,7 +21,7 @@ def main():
     _, _ , tokenizer = get_dataloader(config)
     experiment_name = 'logs/simple_experiment/embeddings'
     writter = SummaryWriter(log_dir=experiment_name,)  
-    epochs = [0,10,20,30,90]
+    epochs = [0,10,35,100]
     # Fraction of embeddings to write
     fraction = 0.1
     vocab_size = tokenizer.get_vocab_size()
