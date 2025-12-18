@@ -69,20 +69,20 @@ class AttentionLayer(nn.Module):
         self.seq_len=seq_len
         self.dropout=nn.Dropout(dropout)
         
-        # Low-rank factorization: W = w1 @ w2.T
+        # Low-rank factorization: W = Wq @ Wk.T
         # If rank is None, use full rank (original behavior)
         self.rank = rank if rank is not None else d_model
-        self.w1 = nn.Linear(d_model, self.rank, bias=False)
-        self.w2 = nn.Linear(d_model, self.rank, bias=False)
+        self.Wq = nn.Linear(d_model, self.rank, bias=False)
+        self.Wk = nn.Linear(d_model, self.rank, bias=False)
     
     def forward(self,x,mask):
         # x: (batch, seq_len, d_model)
 
-        # Efficient computation: x @ W @ x.T = (x @ w1) @ (x @ w2).T
-        # Instead of: x @ (w1 @ w2.T) @ x.T
+        # Efficient computation: x @ W @ x.T = (x @ Wq) @ (x @ Wk).T
+        # Instead of: x @ W @ x.T
         
-        proj_left = self.w1(x)   # (batch, seq_len, rank) - cheaper!
-        proj_right = self.w2(x)  # (batch, seq_len, rank)
+        proj_left = self.Wq(x)   # (batch, seq_len, rank) - cheaper!
+        proj_right = self.Wk(x)  # (batch, seq_len, rank)
         
         # Compute attention scores efficiently
         attention_scores = proj_left @ proj_right.transpose(-2, -1) / math.sqrt(self.d_model)

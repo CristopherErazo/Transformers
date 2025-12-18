@@ -6,8 +6,8 @@ seq_len : 256
 d_model : 128
 dropout : 0.01
 rank : 64
-num_epochs : 30
-lr : 1.0e-3
+num_epochs : 20
+lr : 0.5e-3
 experiment_name : 'logs/simple_experiment'
 model_folder : 'logs/weights'
 model_filename : 'simple_transformer'

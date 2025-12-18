@@ -6,6 +6,7 @@ from torch.optim.lr_scheduler import ExponentialLR
 import argparse
 from pathlib import Path
 from tqdm import tqdm
+import numpy as np
 
 from attention_nn.model import SimpleTransformer
 from attention_nn.dataset import get_dataloader 
@@ -44,6 +45,10 @@ def train():
         if p.dim() > 1:
             # nn.init.normal_(p)
             nn.init.xavier_uniform_(p)
+    
+    # Initialize embedding layer with E_fixed and freeze gradients
+    # model.input_embeddings.embedding.weight.data = torch.from_numpy(config['E_fixed']).float().to(device)
+    # model.input_embeddings.embedding.weight.requires_grad = False
 
   
     pad_id = tokenizer.token_to_id("[PAD]")
@@ -73,10 +78,10 @@ def train():
 
     tot_global_steps = config['num_epochs']*len(train_dataloader)
     print(f'Total number of global steps = {config["num_epochs"]*len(train_dataloader)}')
-    k = 3
-    nprints = 50
+    k = 2
+    nprints = 30
     print_every = max(1,tot_global_steps // nprints)
-    fraction = 0.1
+    fraction = 0.5
     num_embeddings_to_write = int(vocab_size * fraction)
     # embeddings = model.input_embeddings.embedding.weight.data.clone().cpu().numpy()
     # writter.add_embedding(embeddings[:num_embeddings_to_write], metadata=[tokenizer.id_to_token(i) for i in range(num_embeddings_to_write)], tag='initial_embeddings')
@@ -130,7 +135,17 @@ def train():
                 writter.add_embedding(embeddings[:num_embeddings_to_write], 
                                       metadata=[tokenizer.id_to_token(i) for i in range(num_embeddings_to_write)], 
                                       tag='embeddings' , global_step=global_step)
-            
+
+                E = embeddings - embeddings.mean(axis=0, keepdims=True)
+                cov = (E.T @ E) / E.shape[0]
+                eigvals = np.linalg.eigvalsh(cov)
+                writter.add_histogram('Cov-Emb Eigvals', eigvals, global_step)
+
+                key = model.attention_layer.w1.weight.data.clone().cpu().numpy()
+                writter.add_histogram('Keys', key , global_step)
+                query = model.attention_layer.w2.weight.data.clone().cpu().numpy()
+                writter.add_histogram('Queries', query , global_step)
+
                 writter.flush()
             
             # Update the weights
