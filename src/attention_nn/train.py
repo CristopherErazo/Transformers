@@ -73,6 +73,10 @@ def top_k_accuracy(model,data_loader,pad_id,device,CE_loss,k : int = 5):
     """
 
     model.eval()
+    # If dataloader is a tqdm iterator, disable its progress bar during evaluation
+    if isinstance(data_loader, tqdm.tqdm):
+        data_loader.disable = True
+
     with torch.no_grad():
         total = 0
         rigth = 0
@@ -147,3 +151,91 @@ def validation_write(model,train_dataloader,val_dataloader,writter,pad_id,device
     writter.add_histogram('Queries', query , global_step)
 
     writter.flush()
+
+
+def train_and_write(model, train_iterator, val_iterator, writter, optimizer, device, vocab_size , CE_loss , global_step, pad_id,selected_tokens,k,print_freq):
+    """
+    Train the model for one epoch.
+    Args:
+        model: The Transformer model to be trained.
+        iterator: DataLoader or tqdm iterator providing the training data.
+        optimizer: The optimizer for updating model weights.
+        device: The device (CPU/GPU) to run the training on.
+        vocab_size: Size of the vocabulary.
+        CE_loss: Cross-entropy loss function.   
+    """
+    is_tqdm = isinstance(train_iterator, tqdm.tqdm)
+    model.train()
+    
+ 
+    for batch in train_iterator:
+        input = batch['input'].to(device) # (batch_size, seq_len)
+        label = batch['label'].to(device) # (batch_size, seq_len)
+        mask = batch['attention_mask'].to(device) # (batch_size, seq_len, seq_len)
+
+        # Run inputs through model
+        logits = model(input,mask) # (batch_size, seq_len, vocab_size)
+
+        # Compute loss: CE_loss(predictor , target) where:
+        # predictor shape = (N_tot , vocab_size) 'unnormalized prob over vocabulary' (logits)
+        # target shape (N_tot) 'categorical ground truth'
+        loss = CE_loss(logits.view(-1,vocab_size) , label.view(-1))
+        
+        # Backpropagate the loss
+        loss.backward()
+
+        condition_write = (global_step % print_freq == 0)
+        if condition_write:
+            # Top-k accuracies and losses
+            train_acc , train_loss = top_k_accuracy(model,train_iterator,pad_id,device,CE_loss,k=k)
+            val_acc , val_loss = top_k_accuracy(model,val_iterator,pad_id,device,CE_loss,k=k)
+
+            # Computations with embeddings
+            embeddings = model.input_embeddings.embedding.weight.data.clone()
+            E = embeddings - embeddings.mean(axis=0, keepdims=True)
+            cov = (E.T @ E) / E.shape[0]
+            eigvals = torch.linalg.eigvalsh(cov).cpu().numpy()
+
+            # Key and Query weights
+            key = model.attention_layer.Wk.weight.data.clone().cpu().numpy()
+            query = model.attention_layer.Wq.weight.data.clone().cpu().numpy()
+
+            # Gradient norms
+            grad_norms = {}
+            for name, param in model.named_parameters():
+                short_name = name.split('.')[-2]
+                if param.grad is not None:
+                    grad_norm = param.grad.data.norm(2).item()
+                    grad_norms[short_name] = grad_norm
+                else:
+                    grad_norms[short_name] = 0.0
+
+            # Write to TensorBoard
+
+            writter.add_scalars('Accuracy',
+                                {'Train': train_acc, 'Validation': val_acc }, global_step)
+
+            writter.add_scalars('CE_Loss',
+                                { 'Train': train_loss, 'Validation': val_loss }, global_step)
+
+            writter.add_scalars('Grad Norms', grad_norms, global_step)
+
+            idx = selected_tokens['indexes']
+            labels = selected_tokens['labels']
+            writter.add_embedding(embeddings[idx].cpu().numpy(), metadata=labels, tag='embeddings', global_step=global_step)
+
+            writter.add_histogram('E-Cov Eigvals', eigvals, global_step)
+            writter.add_histogram('Keys', key , global_step)
+            writter.add_histogram('Queries', query , global_step)
+
+            writter.flush()
+
+        
+        # Update the weights
+        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+
+        if is_tqdm : 
+            train_iterator.set_postfix({"loss": f"{loss.item():6.3f}"})
+
+        global_step += 1

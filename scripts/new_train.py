@@ -7,8 +7,7 @@ import argparse
 
 from attention_nn.model import SimpleTransformer
 from attention_nn.dataset import get_dataloader 
-from attention_nn.train import train_epoch , validation_write
-
+from attention_nn.train import train_epoch , validation_write , train_and_write
 
 def main():
     parser = argparse.ArgumentParser(description="Train a simple Transformer model.")
@@ -45,6 +44,10 @@ def main():
     emb_mode = args.emb_mode
     frac_embedd = args.frac_embedd
     k = 3  # for top-k accuracy
+
+
+
+    print_freq = 100  # Frequency of printing training status
     if is_tqdm:
         print("Using tqdm for progress bars.")
 
@@ -114,13 +117,21 @@ def main():
     Path(log_dir).mkdir(parents=True, exist_ok=True)
     writter = SummaryWriter(log_dir=log_dir)  
 
+    tot_global_steps = num_epochs*len(train_dataloader)
+    print(f'Total number of global steps = {tot_global_steps}')
+    k = 2
+    nprints = 30
+    print_every = max(1,tot_global_steps // nprints)
     global_step = 0
+    
+
     for epoch in range(num_epochs):
         torch.cuda.empty_cache()
         batch_iterator = tqdm(train_dataloader, desc=f"Processing Epoch {epoch:02d}") if is_tqdm else train_dataloader
-        
-        grad_norms = train_epoch(model, batch_iterator, optimizer, device, vocab_size, CE_loss , global_step)
-        validation_write(model,train_dataloader,val_dataloader,writter,pad_id,device,CE_loss,selected_tokens,k,epoch,grad_norms)
+        train_and_write(model, batch_iterator, val_dataloader, writter, optimizer, device, vocab_size , CE_loss , global_step, pad_id,selected_tokens,k,print_every)
+
+        # grad_norms = train_epoch(model, batch_iterator, optimizer, device, vocab_size, CE_loss , global_step)
+        # validation_write(model,train_dataloader,val_dataloader,writter,pad_id,device,CE_loss,selected_tokens,k,epoch,grad_norms)
 
 
         # Save the model at the end of every epoch

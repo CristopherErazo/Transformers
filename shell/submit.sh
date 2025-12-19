@@ -1,25 +1,22 @@
 #!/bin/bash
 
 # Fixed parameters
-d_model=128
-lr=2e-3
-batch_size=32
-num_epochs=5
-seq_len=112
-dataset_size=100
+dataset_size=500
+d_model=256
+num_epochs=30
+seq_len=256
 is_tqdm=True
+batch_size=27
 
 
-# Array of embedding modes to test
-emb_modes=('rnd_train' 'rnd_fix' 'given_train' 'given_fix')
-
+# List of variables
+lr_values=(1e-3 2e-3 5e-4)
 
 # Loop through each mode and run the training script
-for mode in "${emb_modes[@]}"; do
-    echo "Running new_train.py with --emb_mode=$mode"
+for lr in "${lr_values[@]}"; do
+    echo "Running new_train.py with --lr=$lr"
 
-    python ./scripts/new_train.py \
-        --emb_mode "$mode" \
+    python ./scripts/train_test.py \
         --d_model $d_model \
         --lr $lr \
         --batch_size $batch_size \

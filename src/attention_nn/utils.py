@@ -84,3 +84,51 @@ def top_k_accuracy(model,data_loader,pad_id,device,k=5,is_test=False):
     return av_acc, st_acc, acc , tot_loss / len(data_loader)
 
             
+
+def embeddings_computations(embeddings: torch.Tensor, tokenizer , m: int = 5,n_tokes: int = 10) -> tuple:
+    """ Compute the top-m eigenvalues and corresponding top contributing tokens of the embeddings covariance matrix.
+    Args:
+        embeddings (torch.Tensor): The embedding matrix of shape (vocab_size, d_model).
+        tokenizer: The tokenizer object to map token IDs to tokens.
+        m (int): Number of top eigenvalues/eigenvectors to compute.
+        n_tokes (int): Number of top contributing tokens to retrieve for each eigenvector.
+    Returns:
+        tuple: (eigvals (np.ndarray), top_tokens_labels (list of list of str))
+    """
+
+    # Center the embeddings
+    E = embeddings - embeddings.mean(axis=0, keepdims=True)
+    # Compute covariance matrix and its eigen decomposition
+    cov = (E.T @ E) / E.shape[0]
+    eigvals , eigvecs = torch.linalg.eigh(cov)
+    # Select m eigenvectors with largest eigenvalues
+    top_eigvecs = eigvecs[:, -m:] # shape (d_model, m)
+    # Overlap of top eigenvectors with embeddings
+    overlap = E @ top_eigvecs  # shape (vocab_size, m)
+    # Get top contributing tokens for each eigenvector
+    _ , top_tokens = torch.topk(torch.abs(overlap), k=n_tokes, dim=0)  
+
+    top_tokens_labels = []
+    for i in range(m):
+        labels = [tokenizer.id_to_token(idx.item()) for idx in top_tokens[:, i]]
+        top_tokens_labels.append(labels)
+    
+    return eigvals.cpu().numpy(), top_tokens_labels[::-1] # Return in descending order
+
+def get_gradient_norms(model: nn.Module) -> dict:
+    """ 
+    Compute the L2 norm of gradients for each parameter tensor in the model.
+
+    Args:
+        model (nn.Module): The neural network model.    
+    Returns:    
+        grad_norms (dict): A dictionary mapping parameter names to their gradient L2 norms.
+    """
+    grad_norms = {}
+    for name, param in model.named_parameters():
+        short_name = name.split('.')[-2]
+        if param.grad is not None:
+            grad_norms[short_name] = param.grad.data.norm(2).item()
+        else:
+            grad_norms[short_name] = 0.0
+    return grad_norms
