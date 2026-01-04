@@ -17,7 +17,7 @@ def get_all_sentences(raw_dataset):
     for item in raw_dataset:
         yield item['text']
 
-def build_tokenizer(raw_dataset):
+def build_tokenizer(raw_dataset,min_frec:int=2) -> Tokenizer:
     """ Builds a WordLevel tokenizer from the raw dataset.
     Args:
         raw_dataset: Dataset object with 'text' field
@@ -26,7 +26,7 @@ def build_tokenizer(raw_dataset):
     """
     tokenizer = Tokenizer(WordLevel(unk_token="[UNK]"))
     tokenizer.pre_tokenizer = Whitespace()
-    trainer = WordLevelTrainer(special_tokens=["[UNK]", "[PAD]", "[SOS]", "[EOS]"], min_frequency=2)
+    trainer = WordLevelTrainer(special_tokens=["[UNK]", "[PAD]", "[SOS]", "[EOS]"], min_frequency=min_frec)
     tokenizer.train_from_iterator(get_all_sentences(raw_dataset), trainer=trainer)
     return tokenizer
 
@@ -68,7 +68,7 @@ class NextTokenDataset(Dataset):
         tokens = self.tokenizer.encode(text).ids
         
         # Skip if too short
-        if len(tokens) < 2:
+        if len(tokens) < 10:
             return None
         
         # Truncate if too long (with room for SOS and EOS)
@@ -116,8 +116,13 @@ class NextTokenDataset(Dataset):
             "label": label,                      # (seq_len): target next-token sequence
             "attention_mask": attention_mask,    # (1, seq_len)&( seq_len, seq_len) pad and causal mask 
             "text": text,                        # (str): original text for debugging
+            "tokens_len" : len(tokens)                    # (int): length of original tokenized text
         }
     
+# After splitting raw_train_ds and raw_val_ds
+def filter_short(ds, tokenizer, min_len=10):
+    return [item for item in ds if len(tokenizer.encode(item['text']).ids) >= min_len]
+
 
 def get_dataloader(config:dict) -> tuple[DataLoader,DataLoader,Tokenizer]:
     """
@@ -143,6 +148,12 @@ def get_dataloader(config:dict) -> tuple[DataLoader,DataLoader,Tokenizer]:
     train_size = int(config['train_fraction'] * len(raw_dataset))
     val_size = len(raw_dataset) - train_size
     raw_train_ds , raw_val_ds = random_split(raw_dataset,[train_size,val_size])
+    
+    # Filter out short sequences
+    
+    raw_train_ds = filter_short(raw_train_ds, tokenizer)
+    raw_val_ds = filter_short(raw_val_ds, tokenizer)
+    
     # Create  NextTokenDataset instances
     train_dataset = NextTokenDataset(raw_train_ds,tokenizer,config['seq_len'])
     val_dataset = NextTokenDataset(raw_val_ds,tokenizer,config['seq_len'])

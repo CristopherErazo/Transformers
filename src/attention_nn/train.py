@@ -113,6 +113,8 @@ def top_k_accuracy(model,data_loader,pad_id,device,CE_loss,k : int = 5):
     return  acc , tot_loss / len(data_loader)
 
 
+
+
 def validation_write(model,train_dataloader,val_dataloader,writter,pad_id,device,CE_loss,selected_tokens:dict,k:int,global_step:int,grad_norms:dict):
 
     # Compute metrics for TensorBoard logging
@@ -239,3 +241,99 @@ def train_and_write(model, train_iterator, val_iterator, writter, optimizer, dev
             train_iterator.set_postfix({"loss": f"{loss.item():6.3f}"})
 
         global_step += 1
+
+
+
+
+def metrics_computations(model, dataloader, device, CE_loss,sequence_fractions = [0.7, 0.8, 0.9, 1.0]):
+    """ Compute the validation loss of the model on the given validation data loader.
+
+    Args:
+        model: The Transformer model to evaluate.
+        val_dataloader: DataLoader providing the validation data.
+        device: The device (CPU/GPU) to run the evaluation on.
+        CE_loss: Cross-entropy loss function.
+        
+    Returns:
+        float: average_loss
+    """
+
+    model.eval()
+    vocab_size = model.vocab_size
+    # If dataloader is a tqdm iterator, disable its progress bar during evaluation
+    if isinstance(dataloader, tqdm.tqdm):
+        dataloader.disable = True
+
+    with torch.no_grad():
+        tot_loss = 0.0
+        running_entropy = torch.zeros(len(sequence_fractions))
+        running_pr = torch.zeros(len(sequence_fractions))
+        
+        for batch in dataloader:
+            input = batch['input'].to(device) # (batch_size, seq_len)
+            label = batch['label'].to(device) # (batch_size, seq_len)
+            attention_mask = batch['attention_mask'].to(device)  # (1, seq_len)&( seq_len, seq_len)
+            tokens_len = batch['tokens_len'].to(device) # (batch_size)
+            
+            # Forward pass step by step to access inner activations
+            x = model.input_embeddings(input)  # (batch_size, seq_len, d_model)
+            x = model.positional_encoding(x)  # (batch_size, seq_len, d_model)
+            a = model.attention_layer.attention_probabilities(x, attention_mask)  # (batch_size, seq_len, seq_len)
+            z = a @ x  # (batch_size, seq_len, d_model)
+            x = model.residual_connection(x, z)  # (batch_size, seq_len, d_model)
+            logits = torch.matmul(x, model.input_embeddings.embedding.weight.t())  # (batch_size, seq_len, vocab_size)
+            
+            # Compute CE loss
+            loss = CE_loss(logits.view(-1, vocab_size), label.view(-1))
+            tot_loss += loss.item()
+
+            # Sparsity measures 
+            entropies , prs = sparsity_measure(a, tokens_len, sequence_fractions=sequence_fractions)
+            running_entropy += torch.tensor(entropies)
+            running_pr += torch.tensor(prs)
+
+        average_loss = tot_loss / len(dataloader)
+        
+    return tot_loss / len(dataloader) , (running_entropy / len(dataloader)).tolist() , (running_pr / len(dataloader)).tolist()
+
+
+def sparsity_measure(attention_probs, tokens_len, sequence_fractions = [0.25, 0.5, 0.75, 1.0]):
+    """
+    Compute the sparcity measure of attention weights.
+    Args:
+        attention_probs: Attention probabilities tensor of shape (batch_size, seq_len, seq_len).
+        tokens_len: Tensor containing the actual lengths of sequences in the batch (batch_size).
+    Returns:
+        float: Average sparcity measure over the batch.
+    """
+    batch_size, seq_len, _ = attention_probs.size()
+
+
+    # Compute last effective token index for each sample in the batch
+    last_token_indices = torch.clamp(tokens_len, min=0,max=seq_len)  # (batch_size)
+
+    entropies = []
+    prs = []
+    for frac in sequence_fractions:
+        idx = (last_token_indices * frac).long()
+
+        # For each sample in the batch collect the attention weigths of the last effective token
+        attention = attention_probs[torch.arange(batch_size), idx, :]  # (batch_size, seq_len)
+        # Compute attention * log(attention) avoiding entries with attention = 0 with a mask
+        entropy = torch.nansum(attention*torch.log(attention),dim=1)  # (batch_size)
+        # Entropy per sequence length
+        entropy = - entropy / torch.log(idx.float()+1)  # (batch_size)
+        entropy = entropy.mean()
+        # Compute participation ratio
+        pr = torch.sum(attention**2,dim=1)  # (batch_size)
+        # pr = pr / (idx.float() + 1 ) # (batch_size)
+        pr = pr.mean()
+
+        # Save
+        entropies.append(entropy.item())
+        prs.append(pr.item())
+
+
+    return entropies , prs
+
+

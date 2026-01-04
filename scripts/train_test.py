@@ -89,7 +89,7 @@ def main():
 
 
     tot_global_steps = num_epochs*len(train_dataloader)
-    nprints = 50
+    nprints = 150
     print_every = max(1,tot_global_steps // nprints)
     global_step = 0
     count_prints = 0
@@ -97,6 +97,7 @@ def main():
     # Run training loop
     time_start = time.time()
     for epoch in range(num_epochs):
+        print(f'{epoch = } , running time = {(time.time() - time_start)/60} min')
         torch.cuda.empty_cache()
         batch_iterator = tqdm(train_dataloader, desc=f"Processing Epoch {epoch:02d}") if is_tqdm else train_dataloader
         
@@ -157,7 +158,7 @@ def main():
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
             
-            batch_iterator.set_postfix({"loss": f"{loss.item():6.3f}"})
+            #batch_iterator.set_postfix({"loss": f"{loss.item():6.3f}"})
 
             global_step += 1
 

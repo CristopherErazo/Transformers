@@ -7,3 +7,5 @@ log/
 logs/
 *egg-info/
 data/
+*.log
+runs/
