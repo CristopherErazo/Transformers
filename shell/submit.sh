@@ -2,24 +2,22 @@
 
 # Fixed parameters
 d_model=1024
-dataset_size=20000
+dataset_size=10000
 seq_len=256
 rank=64
-num_epochs=30
+num_epochs=25
 is_tqdm=False
-freeze_embeddings=False
+freeze_embeddings=True
 freeze_attention=False
 random_positional_encoding=False
 skip_residual=False
-# amplitude=1.0
-# set amplitude as 1/sqrt(d_model)
-amplitude=$(echo "scale=10; 1/sqrt($d_model)" | bc -l)
+amplitude=1.0
 sigma=0.1
-n_prints=120
+n_prints=50
 
 # List of variables
-bs_values=(64 128 256)
-lr_values=(0.01)
+bs_values=(64)
+lr_values=(0.001)
 
 Run the loop after some min delay to stagger jobs
 min_wait=0

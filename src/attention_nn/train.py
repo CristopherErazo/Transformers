@@ -255,7 +255,7 @@ def metrics_computations(model, dataloader, device, CE_loss,sequence_fractions =
         CE_loss: Cross-entropy loss function.
         
     Returns:
-        float: average_loss
+        tuple: (average_loss (float), average_entropy (list of float), average_participation_ratio (list of float), attention_patterns (numpy array))
     """
 
     model.eval()
@@ -277,10 +277,10 @@ def metrics_computations(model, dataloader, device, CE_loss,sequence_fractions =
             
             # Forward pass step by step to access inner activations
             x = model.input_embeddings(input)  # (batch_size, seq_len, d_model)
-            x = model.positional_encoding(x)  # (batch_size, seq_len, d_model)
-            a = model.attention_layer.attention_probabilities(x, attention_mask)  # (batch_size, seq_len, seq_len)
-            z = a @ x  # (batch_size, seq_len, d_model)
-            x = model.residual_connection(x, z)  # (batch_size, seq_len, d_model)
+            pos = model.positional_encoding(x)  # (batch_size, seq_len, d_model)
+            a = model.attention_layer.attention_probabilities(pos, attention_mask)  # (batch_size, seq_len, seq_len)
+            z = a @ pos  # (batch_size, seq_len, d_model)
+            x = model.residual_connection(pos, z)  # (batch_size, seq_len, d_model)
             logits = torch.matmul(x, model.input_embeddings.embedding.weight.t())  # (batch_size, seq_len, vocab_size)
             
             # Compute CE loss
@@ -292,9 +292,13 @@ def metrics_computations(model, dataloader, device, CE_loss,sequence_fractions =
             running_entropy += torch.tensor(entropies)
             running_pr += torch.tensor(prs)
 
-        average_loss = tot_loss / len(dataloader)
-        
-    return tot_loss / len(dataloader) , (running_entropy / len(dataloader)).tolist() , (running_pr / len(dataloader)).tolist()
+  
+
+        # Save attention patterns for the maximum token leng
+        i_save = torch.argsort(tokens_len, descending=True)[0]
+        a_save = a[i_save].cpu().numpy()  # (seq_len, seq_len)  
+        pos_save = pos[i_save].cpu().numpy()  # (seq_len, d_model) 
+    return tot_loss / len(dataloader) , (running_entropy / len(dataloader)).tolist() , (running_pr / len(dataloader)).tolist(), a_save , pos_save
 
 
 def sparsity_measure(attention_probs, tokens_len, sequence_fractions = [0.25, 0.5, 0.75, 1.0]):

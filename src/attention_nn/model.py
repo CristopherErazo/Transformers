@@ -80,14 +80,55 @@ class AttentionLayer(nn.Module):
         self.seq_len=seq_len
         self.dropout=nn.Dropout(dropout)
         
-        # Low-rank factorization: W = Wq @ Wk.T
-        # If rank is None, use full rank (original behavior)
-        self.rank = rank if rank is not None else d_model
-        self.Wq = nn.Linear(d_model, self.rank, bias=False)
-        self.Wk = nn.Linear(d_model, self.rank, bias=False)
-        if freeze:
-            self.Wq.weight.requires_grad = False
-            self.Wk.weight.requires_grad = False
+        self.rank = rank
+        # If rank is None, use full rank (original behavior) with single matrix W
+        if rank is None:
+            self.W = nn.Linear(d_model, d_model, bias=False)
+            if freeze:
+                self.W.weight.requires_grad = False
+            self.dot = self.dot_full
+        else:
+              # Low-rank factorization: W = Wq @ Wk.T
+            self.Wq = nn.Linear(d_model, self.rank, bias=False)
+            self.Wk = nn.Linear(d_model, self.rank, bias=False)
+            if freeze:
+                self.Wq.weight.requires_grad = False
+                self.Wk.weight.requires_grad = False
+            self.dot = self.dot_lowrank
+
+
+    def dot_full(self,x):
+        """ Compute attention scores using full weight matrix.
+        Args:
+            x: (batch, seq_len, d_model)
+        Returns:
+            attention_scores: (batch, seq_len, seq_len) x.T W x
+        """
+        # x: (batch, seq_len, d_model)
+        attention_scores = x @ self.W.weight @ x.transpose(-2, -1) / math.sqrt(self.d_model)
+        # (batch, seq_len, d_model) @ (d_model, d_model) @ (batch, d_model, seq_len) = (batch, seq_len, seq_len)
+        return attention_scores 
+    
+    def dot_lowrank(self,x):
+        """ Compute attention scores using low-rank factorization.
+        Args:
+            x: (batch, seq_len, d_model)
+        Returns:
+            attention_scores: (batch, seq_len, seq_len) x.T W x
+        """
+        # x: (batch, seq_len, d_model)
+
+        # Efficient computation: x @ W @ x.T = (x @ Wq) @ (x @ Wk).T
+        # Instead of: x @ W @ x.T
+        
+        proj_left = self.Wq(x)   # (batch, seq_len, rank) - cheaper!
+        proj_right = self.Wk(x)  # (batch, seq_len, rank)
+        
+        # Compute attention scores efficiently
+        attention_scores = proj_left @ proj_right.transpose(-2, -1) / math.sqrt(self.rank)
+        # (batch, seq_len, rank) @ (batch, rank, seq_len) = (batch, seq_len, seq_len)
+        return attention_scores
+    
     
     def attention_probabilities(self, x, mask):
         """ Compute attention scores using low-rank factorization.
@@ -99,20 +140,14 @@ class AttentionLayer(nn.Module):
         """
         # x: (batch, seq_len, d_model)
 
-        # Efficient computation: x @ W @ x.T = (x @ Wq) @ (x @ Wk).T
-        # Instead of: x @ W @ x.T
-        
-        proj_left = self.Wq(x)   # (batch, seq_len, rank) - cheaper!
-        proj_right = self.Wk(x)  # (batch, seq_len, rank)
         
         # Compute attention scores efficiently
-        attention_probabilities = proj_left @ proj_right.transpose(-2, -1) / math.sqrt(self.d_model)
-        # (batch, seq_len, rank) @ (batch, rank, seq_len) = (batch, seq_len, seq_len)
+        attention_scores = self.dot(x)  # (batch, seq_len, seq_len)
 
         if mask is not None:
-            attention_probabilities = attention_probabilities.masked_fill(mask == 0, -1e9) 
+            attention_scores = attention_scores.masked_fill(mask == 0, -1e9) 
         
-        attention_probabilities = torch.softmax(attention_probabilities, dim=-1)  # (batch, seq_len, seq_len)
+        attention_probabilities = torch.softmax(attention_scores, dim=-1)  # (batch, seq_len, seq_len)
         return attention_probabilities
 
     def forward(self,x,mask):
@@ -252,7 +287,7 @@ def create_model(config: dict) -> Transformer:
     ).to(device)
 
     # Initialize the parameters
-    std_init = config.get('sigma',1.0)/ (model.d_model ** 0.5)
+    std_init = config.get('sigma',1.0) / (model.d_model ** 0.5)
     for param in model.parameters():
         if param.dim() > 1:
             torch.nn.init.normal_(param, mean=0.0, std=std_init)    

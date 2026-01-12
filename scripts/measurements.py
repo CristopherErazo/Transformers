@@ -39,8 +39,10 @@ def main():
     for key in ['is_tqdm', 'freeze_embeddings', 'freeze_attention', 'random_positional_encoding', 'skip_residual']:
         config[key] = True if config[key] == 'True' else False
     
-    fix_params = { key : config[key] for key in ['d_model','seq_len','dataset_size']}
-    variable_params = { key : config[key] for key in ['batch_size','lr']}
+    config['rank'] = None if config['rank'] == -1 else int(config['rank'])
+    
+    fix_params = { key : config[key] for key in ['rank','d_model','seq_len','dataset_size','random_positional_encoding']}
+    variable_params = { key : config[key] for key in ['batch_size','lr','freeze_embeddings','freeze_attention','skip_residual']}
 
     params = {'fixed' : fix_params,
               'variable': variable_params}
@@ -75,9 +77,12 @@ def main():
         'vocab_size': config['vocab_size'],
         'embedd_eigvals': [],
         'embedd_top_tokens': [],
-        'Wk': [],
-        'Wq': [],
+        'W_eigvals': [],
+        'attention_patterns': [],
+        'norm_W': [],
+        'positional_encodings': []
     }
+
     data_embeddings = {
         'embeddings': [],
         'embeddings_steps': []
@@ -125,12 +130,14 @@ def main():
             measure_condition = (global_step % print_every == 0)
             if measure_condition:
                 # train_loss , train_entropy , train_pr = metrics_computations(model, train_dataloader, device, CE_loss,sequence_fractions = sequence_fractions)
-                val_loss , val_entropy , val_pr = metrics_computations(model, val_dataloader, device, CE_loss,sequence_fractions = sequence_fractions)
+                val_loss , val_entropy , val_pr , a_save , pos_save = metrics_computations(model, val_dataloader, device, CE_loss,sequence_fractions = sequence_fractions)
                 summary['train_loss'].append(loss.item())
                 summary['val_loss'].append(val_loss)
                 summary['entropy'].append(val_entropy)
                 summary['part_ratio'].append(val_pr)
                 summary['evaluation_steps'].append(global_step)
+                summary['attention_patterns'].append(a_save)
+                summary['positional_encodings'].append(pos_save)
 
                 # Record gradient norms
                 for name, param in model.named_parameters():
@@ -146,10 +153,22 @@ def main():
                 eigvals , top_tokens = embeddings_computations(embeddings,tokenizer,m=15,n_tokes=30)
                 summary['embedd_eigvals'].append(eigvals)
                 summary['embedd_top_tokens'].append(top_tokens)
-                # Save attention weights Wk and Wq
+                
+                # Compute and save eigenvalues of W@W^T where W = Wq @ Wk^T 
+                # do it in efficient way
+                if config['rank'] is None:
+                    W = model.attention_layer.W.weight.data.clone() # (d_model, d_model)
+                else:
+                    Wk = model.attention_layer.Wk.weight.data.clone() # (d_model, rank)
+                    Wq = model.attention_layer.Wq.weight.data.clone() # (d_model, rank)
+                    W = torch.matmul(Wq, Wk.t()) # (d_model, d_model)
 
-                summary['Wk'].append(model.attention_layer.Wk.weight.data.clone().cpu().numpy())
-                summary['Wq'].append(model.attention_layer.Wq.weight.data.clone().cpu().numpy())
+                WWT = torch.matmul(W, W.t()) # (d_model, d_model)
+                eigvals_WWT = torch.linalg.eigvalsh(WWT).cpu().numpy()
+                summary['W_eigvals'].append( eigvals_WWT)
+                summary['norm_W'].append( torch.norm(W).item() )
+
+
 
             # Measure embeddings
             measure_embeddings = (global_step % print_embeddings == 0)
@@ -173,8 +192,8 @@ def main():
             print(f'{key} : {summary[key].shape}')
 
     
-    save_data(summary,'summary',experiment_name='full_measurements', params=params)
-    save_data(data_embeddings,'summary_embeddings',experiment_name='full_measurements', params=params)
+    save_data(summary,'summary',experiment_name='new_measurements', params=params)
+    save_data(data_embeddings,'summary_embeddings',experiment_name='new_measurements', params=params)
 
 
 
