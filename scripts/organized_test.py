@@ -7,10 +7,10 @@ import numpy as np
 
 from attention_nn.model import create_model
 from attention_nn.dataset import get_dataloader
-from attention_nn.train import sparsity_measure , metrics_computations
+from attention_nn.train import  metrics_computations, model_matrices_diagnostics, get_special_batch
 from attention_nn.utils import embeddings_computations
 
-from configurations.data_config import make_params_dict, save_data
+from configurations.data_config import make_params_dict, save_data, load_data
 
 def main():
     # Set up argument parser
@@ -60,10 +60,29 @@ def main():
     config['vocab_size'] = tokenizer.get_vocab_size()
     print(f'Vocabulary size = {config["vocab_size"]}. Maximum entropy per token = {np.log(config["vocab_size"]):.4f} nats.')
     pad_id = tokenizer.token_to_id("[PAD]")
+    special_batch = get_special_batch(train_dataloader,config['L'],k=3)
+
+    # Load data statistics
+    names = ['dataset_size','L']
+    params_stats = {k: config[k] for k in names}
+    data_statistics = load_data('token_counts','data_statistics',params=params_stats,base_dir='./data')
+    for key in data_statistics.keys():
+        print(f'{key} : {data_statistics[key].shape}')
+    
+    P_mu = data_statistics['unsorted_token_counts'][1:] # (L-1,V)
+    P_tot = P_mu.sum(axis=0) # (V)
+    P_mu /= P_mu.sum(axis=-1,keepdims=True)
+    P_tot /= P_tot.sum()
+    H_mu = -np.nansum(P_mu * np.log(P_mu+ 1e-12), axis=1)  # (L-1,)
+    H_tot = -np.nansum(P_tot * np.log(P_tot + 1e-12)) 
+    data_stats = (P_mu, P_tot, H_mu, H_tot)
 
     # Set device and build model
     model , device = create_model(config)
     print(f'Model built on device: {device}')
+
+    # Make each data_stats a tensor and send to device
+    data_stats = tuple( torch.tensor(arr, dtype=torch.float32).to(device) for arr in data_stats )
    
     CE_loss = nn.CrossEntropyLoss(ignore_index=pad_id,label_smoothing=0.0)
     optimizer = torch.optim.Adam(model.parameters(),lr=config['lr'],eps=1e-9) 
@@ -80,7 +99,11 @@ def main():
         'entropy': [],
         'part_ratio': [],
         'pos_attended': [],
+        'pred_entropy': [],
         'att_in_fractions': [],
+        'KL_uniform': [],
+        'KL_tot': [],
+        'KL_mu': [],
         'embedd_eigvals': [],
         'embedd_mean': [],
         'embedd_std': [],
@@ -97,10 +120,10 @@ def main():
         'x': [],
         'e': [],
         'tokens_attended': [],
-        'tokens_next': [],
         'embeddings': [],
         'embedd_grad_norms': [],
         'W': [],
+        'special_batch': special_batch
     }
 
     for name, param in model.named_parameters():
@@ -144,14 +167,19 @@ def main():
             measure_condition = (global_step % print_every == 0)
             if measure_condition:
                 # train_loss , train_entropy , train_pr = metrics_computations(model, train_dataloader, device, CE_loss,sequence_fractions = sequence_fractions)
-                val_loss , val_entropy , val_pr , pos_attended, a_save, a_in_fractions , x_save, e_save, top_k_attended, next_tok = metrics_computations(model, val_dataloader, device, CE_loss,sequence_fractions = sequence_fractions)
+                val_loss , val_entropy , val_pr , pos_attended, pred_entropy, a_in_fractions, KL_uni, KL_tot, KL_mu = metrics_computations(model, val_dataloader, device, CE_loss,data_stats,sequence_fractions = sequence_fractions)
                 summary['evaluation_steps'].append(global_step)
                 summary['train_loss'].append(loss.item())
                 summary['val_loss'].append(val_loss)
                 summary['entropy'].append(val_entropy)
                 summary['part_ratio'].append(val_pr)
                 summary['pos_attended'].append(pos_attended)
+                summary['pred_entropy'].append(pred_entropy)
                 summary['att_in_fractions'].append(a_in_fractions)
+                summary['KL_uniform'].append(KL_uni)
+                summary['KL_tot'].append(KL_tot)
+                summary['KL_mu'].append(KL_mu)
+
 
                 # Record gradient norms
                 for name, param in model.named_parameters():
@@ -189,21 +217,30 @@ def main():
 
 
             # Measure embeddings
-            # measure_matrices = (global_step % print_matrices == 0) 
-            measure_matrices = global_step in [0,3,5,7,9,11,13,15]  # For quick testing
+            measure_matrices = (global_step % print_matrices == 0) 
+            # measure_matrices = global_step in [0,3,5,7,9,11,13,15]  # For quick testing
             if measure_matrices:
                 data_matrices['matrix_steps'].append(global_step)
-                val_loss , val_entropy , val_pr , pos_attended, a_save, a_in_fractions , x_save, e_save, top_k_attended, next_tok = metrics_computations(model, val_dataloader, device, CE_loss,sequence_fractions = sequence_fractions)
+                # Get gradient of embeddings
+                emb_grad = model.input_embeddings.embedding.weight.grad.data.clone() # (vocab_size, d_model)
+                # compute its norm per token
+                emb_grad_norms = torch.norm(emb_grad, dim=1) # (vocab_size)
+                data_matrices['embedd_grad_norms'].append(emb_grad_norms.cpu().numpy())
+                
+                # Get model matrices diagnostics
+                a_save , x_save , e_save , top_k_attended = model_matrices_diagnostics(model,special_batch,device,sequence_fractions=sequence_fractions,k=15)
+
                 data_matrices['A'].append(a_save)
                 data_matrices['x'].append(x_save)
                 data_matrices['e'].append(e_save)
 
-                tokens_attended = [[tokenizer.id_to_token(i) for i in topk] for topk in top_k_attended]  # For first fraction
-                
-                next_token = [tokenizer.id_to_token(i) for i in next_tok]
+                # tok_k_attended : (batch_size, len(sequence_fractions), k)
+                tokens_attended =[ [ [tokenizer.id_to_token(element) for element in seqfrac_element] 
+                                    for seqfrac_element in batch_element ]
+                                    for batch_element in top_k_attended ]
                 
                 data_matrices['tokens_attended'].append(tokens_attended)
-                data_matrices['tokens_next'].append(next_token)
+                
 
                 embeddings = model.input_embeddings.embedding.weight.data.clone()
                 data_matrices['embeddings'].append(embeddings.cpu().numpy())
@@ -211,11 +248,6 @@ def main():
                 W = model.attention_layer.W.weight.data.clone() # (d_model, d_model)
                 data_matrices['W'].append(W.cpu().numpy())
 
-                # Get gradient of embeddings
-                emb_grad = model.input_embeddings.embedding.weight.grad.data.clone() # (vocab_size, d_model)
-                # compute its norm per token
-                emb_grad_norms = torch.norm(emb_grad, dim=1) # (vocab_size)
-                data_matrices['embedd_grad_norms'].append(emb_grad_norms.cpu().numpy())
                 
             global_step += 1
             optimizer.step()
@@ -233,7 +265,7 @@ def main():
         print(f'{key} : {summary[key].shape}')
 
     for key in data_matrices:
-        if key != 'tokens' and key != 'tokens_attended' and key != 'tokens_next':
+        if key != 'tokens' and key != 'tokens_attended' and key != 'special_batch':
             data_matrices[key] = np.array(data_matrices[key])
             print(f'{key} : {data_matrices[key].shape}')
     

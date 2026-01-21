@@ -6,10 +6,10 @@ dataset_size=10000
 L=128
 rank=-1
 batch_size=64
-num_epochs=1
+num_epochs=8
 is_tqdm=False
 sigma=0.1
-n_prints=20
+n_prints=100
 nprint_matrices=6
 skip_residual=False
 

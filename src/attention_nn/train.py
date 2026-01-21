@@ -1,6 +1,7 @@
 import tqdm
 import torch
 import math
+import numpy as np
 
 
 def train_epoch(model, iterator, optimizer, device, vocab_size : int, CE_loss , global_step: int):
@@ -246,7 +247,7 @@ def train_and_write(model, train_iterator, val_iterator, writter, optimizer, dev
 
 
 
-def metrics_computations(model, dataloader, device, CE_loss,sequence_fractions = [0.7, 0.8, 0.9, 1.0]):
+def metrics_computations(model, dataloader, device, CE_loss,data_stats,sequence_fractions = [0.7, 0.8, 0.9, 1.0]):
     """ Compute the validation loss of the model on the given validation data loader.
 
     Args:
@@ -264,12 +265,22 @@ def metrics_computations(model, dataloader, device, CE_loss,sequence_fractions =
     # If dataloader is a tqdm iterator, disable its progress bar during evaluation
     if isinstance(dataloader, tqdm.tqdm):
         dataloader.disable = True
+    P_mu, P_tot, H_mu, H_tot = data_stats
+    # P_mu shape (seq_len-1,vocab_size)
+    # P_tot shape (vocab_size, )
+    # H_mu shape (seq_len-1)
+    # H_tot shape ( )
 
     with torch.no_grad():
         tot_loss = 0.0
         running_entropy = torch.zeros(len(sequence_fractions))
         running_pr = torch.zeros(len(sequence_fractions))
         running_pos_attended = torch.zeros(len(sequence_fractions))
+        running_pred_entropy = torch.zeros(model.L)
+        running_KL_uniform = 0.0
+        running_KL_tot = 0.0
+        running_KL_mu = 0.0
+        
         
         for batch in dataloader:
             input = batch['input'].to(device) # (batch_size, seq_len)
@@ -285,7 +296,8 @@ def metrics_computations(model, dataloader, device, CE_loss,sequence_fractions =
             z = model.residual_connection(x, y)  # (batch_size, seq_len, d_model)
             # logits = model.beta*model.projection(z)  # (batch_size, seq_len, vocab_size)
             logits = model.beta*torch.matmul(z, model.input_embeddings.embedding.weight.t())/math.sqrt(model.d) # (batch_size, seq_len, vocab_size)
-            
+            probs = torch.softmax(logits, dim=-1)  # (batch_size, seq_len, vocab_size)
+
             # Compute CE loss
             loss = CE_loss(logits.view(-1, vocab_size), label.view(-1))
             tot_loss += loss.item()
@@ -296,53 +308,53 @@ def metrics_computations(model, dataloader, device, CE_loss,sequence_fractions =
             running_pr += torch.tensor(prs)
             running_pos_attended += torch.tensor(position_attended)
 
-  
+            # Compute entropy of the output distribution per seq position 
+            pred_entropy = - torch.nansum(probs * torch.log(probs+1e-12), dim=-1)  # (batch_size, seq_len)
+            pred_entropy = pred_entropy.mean(dim=0) # (seq_len)
+            running_pred_entropy += pred_entropy.cpu()  # Sum over batches
+
+            # Compare output distribution with data statistics:
+            # P_mu shape (seq_len-1,vocab_size) -> per position token relative frequency
+            # P_tot shape (vocab_size, ) -> token relative frequency of all dataset
+            # Both P_mu and P_tot are torch tensors on the correct device!!
+
+            P_model = probs[:,:-1,:] # # (batch_size, seq_len - 1, vocab_size)
+            logP_model = torch.where(P_model > 0, torch.log(P_model), 0)
+
+            # Comparing with uniform distribution
+            KL_uniform = - (1/vocab_size) * logP_model.sum(axis=-1).mean()
+            running_KL_uniform += KL_uniform.item()
+
+            # Comparing with P_tot (vocab_size, )
+            KL_tot = - P_tot[torch.newaxis, torch.newaxis, :] * logP_model  # (batch_size, seq_len - 1, vocab_size)
+            KL_tot = KL_tot.sum(axis=-1).mean()  # scalar
+            running_KL_tot += KL_tot.item()
+
+            # Comparing with P_mu (seq_len-1,vocab_size)
+            KL_mu = - P_mu[torch.newaxis, :, :] * logP_model  # (batch_size, seq_len - 1, vocab_size)
+            KL_mu = KL_mu.sum(axis=-1).mean()  # scalar
+            running_KL_mu += KL_mu.item()  # Sum over batches
 
         # Save attention patterns for the maximum token leng
         i_save = torch.argsort(tokens_len, descending=True)[0]
         a_save = a[i_save].cpu().numpy()  # (seq_len, seq_len)  
-        x_save = x[i_save].cpu().numpy()  # (seq_len, d_model) 
-        e_save = e[i_save].cpu().numpy()  # (seq_len, d_model)
+       
 
         # Extract also the attention patterns only at the sequence fractions in sequence_fractions
         eff_seq_len = min(int(tokens_len[i_save].item()) , a_save.shape[0])
         idx_of_fractions = [int(eff_seq_len * frac) for frac in sequence_fractions]
         a_in_fractions = a_save[idx_of_fractions , : ]  # (len(sequence_fractions), seq_len)
         
-        # For each seq_frac compute the top k tokens attended by the last effective token
-        top_tok_attended = []
-        next_token = []
-        for i, frac in enumerate(sequence_fractions):
-            last_tok_idx = min(int(tokens_len[i_save].item()) , a_save.shape[0])
-            idx = int(last_tok_idx * frac) 
-            # attention_last_token = a_save[idx]  # (seq_len)
-            # topk_indices = attention_last_token.argsort()[-5:][::-1]  # Top-5 indices
-            # tokens_attended = input[i_save, topk_indices].cpu().clone().numpy()  # Corresponding tokens # shape (5)
-            attention_last_token = a_save[idx]  # (seq_len)
-            # Get indices of top-5 attended tokens (descending order)
-            topk_indices = attention_last_token.argsort()[-15:]
-            topk_indices = topk_indices[::-1]  # Ensure positive stride (descending order)
-            # Select the corresponding tokens from input
-            tokens_attended = (input.cpu().numpy())[i_save, topk_indices]
-            # Make contiguous before converting to numpy to avoid negative stride issues
-            # tokens_attended = selected_tokens.contiguous().numpy()  # shape (5)
-            next_tok = label[i_save, idx].cpu().item()
-
-            top_tok_attended.append(tokens_attended)
-            next_token.append(next_tok)
-        # at the end top_tok_attended is a list of arrays of shape (5) , one for each sequence fraction
-        # containig the top-5 tokens attended by the last effective token
-        
+    
     return (tot_loss / len(dataloader),
             (running_entropy / len(dataloader)).tolist() ,
             (running_pr / len(dataloader)).tolist(),
             (running_pos_attended/len(dataloader)).tolist(),
-            a_save, 
+            (running_pred_entropy / len(dataloader)).cpu().numpy(), 
             a_in_fractions,
-            x_save, 
-            e_save,
-            top_tok_attended,
-            next_token
+            (running_KL_uniform / len(dataloader) ) - math.log(vocab_size),  # KL divergence with uniform distribution
+            (running_KL_tot / len(dataloader) ) - H_tot.item(),  # KL divergence with P_tot
+            (running_KL_mu / len(dataloader) ) - H_mu.mean().item()  # KL divergence with P_mu
             )
 
 
@@ -394,3 +406,68 @@ def sparsity_measure(attention_probs, tokens_len, sequence_fractions = [0.25, 0.
     return entropies , prs , position_attended
 
 
+
+def get_special_batch(dataloader,L,k=3):
+
+    num_max_len = 0
+    while num_max_len < k:
+        special_batch = next(iter(dataloader))
+        seq_lens = special_batch['tokens_len'].numpy()
+        num_max_len = np.sum(seq_lens == L-1)
+
+    # Keep only top k elements in special_batch with the highest token lengths
+
+    lengths = special_batch['tokens_len'].numpy()  # Convert to NumPy array if needed
+    top_k_indices = np.argsort(-lengths)[:k]      # Indices of top k lengths
+
+    for key in special_batch.keys():
+        value = special_batch[key]
+        # If value is a PyTorch tensor, use tensor indexing
+        if isinstance(value, torch.Tensor):
+            special_batch[key] = value[top_k_indices]
+        # If value is a NumPy array, use NumPy indexing
+        elif isinstance(value, np.ndarray):
+            special_batch[key] = value[top_k_indices]
+        # If value is a list, use list comprehension
+        elif isinstance(value, list):
+            special_batch[key] = [value[i] for i in top_k_indices]
+        else:
+            # If value is another type, leave it unchanged or handle as needed
+            raise TypeError(f"Unsupported data type for key '{key}': {type(value)}")
+        
+    return special_batch
+
+
+
+def model_matrices_diagnostics(model,special_batch,device,sequence_fractions = [0.7, 0.8, 0.9, 1.0],k=15):
+
+    with torch.no_grad():
+        input = special_batch['input'].to(device) # (batch_size, seq_len)
+        label = special_batch['label'].to(device) # (batch_size, seq_len)
+        attention_mask = special_batch['attention_mask'].to(device)  # (1, seq_len)&( seq_len, seq_len)
+        tokens_len = special_batch['tokens_len'].to(device) # (batch_size)
+        
+        # Forward pass step by step to access inner activations
+        e = model.input_embeddings(input)  # (batch_size, seq_len, d_model)
+        x = model.positional_encoding(e)  # (batch_size, seq_len, d_model)
+        a = model.attention_layer.attention_probabilities(x, attention_mask)  # (batch_size, seq_len, seq_len)
+        # y = a @ x  # (batch_size, seq_len, d_model)
+        # z = model.residual_connection(x, y)  # (batch_size, seq_len, d_model)
+        # # logits = model.beta*model.projection(z)  # (batch_size, seq_len, vocab_size)
+        # logits = model.beta*torch.matmul(z, model.input_embeddings.embedding.weight.t())/math.sqrt(model.d) # (batch_size, seq_len, vocab_size)
+        
+        # sequence index for different sequence fractions:
+        idx = [int((model.L-1) * frac) for frac in sequence_fractions]
+        a_in_fractions = a[:, idx , : ].cpu().numpy()  # (batch_size, len(sequence_fractions), seq_len)
+
+        # For each sample in the batch and each seq frac compute the top k positions attended 
+        most_attended_positions = np.argsort(a_in_fractions, axis=-1)[:, :, -k:]  # (batch_size, len(sequence_fractions), k)
+        most_attended_positions = most_attended_positions[:, :, ::-1]  # (batch_size, len(sequence_fractions), k) descending order
+        tokens_attended = np.take_along_axis(input.cpu().numpy()[:, np.newaxis, :], most_attended_positions, axis=-1)  # (batch_size, len(sequence_fractions), k)
+
+        return (
+            a.cpu().numpy(),  # (batch_size, seq_len, seq_len)
+            x.cpu().numpy(),  # (batch_size, seq_len, d_model)
+            e.cpu().numpy(),  # (batch_size, seq_len, d_model)
+            tokens_attended,  # (batch_size, len(sequence_fractions), k)
+        )
