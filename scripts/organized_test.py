@@ -15,40 +15,43 @@ from configurations.data_config import make_params_dict, save_data
 def main():
     # Set up argument parser
     parser = argparse.ArgumentParser(description="Train a simple Transformer model.")
-    parser.add_argument('--d_model',type=int,default=256, help='Dimension of the model.')
+    parser.add_argument('--d',type=int,default=256, help='Dimension of the model.')
     parser.add_argument('--dataset_size', type=int, default=1000, help='Size of the dataset.')
     parser.add_argument('--train_fraction', type=float, default=0.9, help='Fraction of data used for training.')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size for training.')
-    parser.add_argument('--seq_len', type=int, default=256, help='Sequence length.')
+    parser.add_argument('--L', type=int, default=124, help='Sequence length.')
     parser.add_argument('--dropout', type=float, default=0.0, help='Dropout rate.')
     parser.add_argument('--rank', type=int, default=64, help='Rank of the model.')
     parser.add_argument('--num_epochs', type=int, default=10, help='Number of training epochs.')
     parser.add_argument('--lr', type=float, default=1.0, help='Learning rate.')
     parser.add_argument('--is_tqdm', type=str,default='True', help='Use tqdm for progress bar?')
     parser.add_argument('--datasource', type=str, default='roneneldan/TinyStories', help='Datasource for the dataset.')
-    parser.add_argument('--freeze_embeddings', type=str, default='False', help='Freeze embeddings during training?')
-    parser.add_argument('--freeze_attention', type=str, default='False', help='Freeze attention weights during training?')
-    parser.add_argument('--random_positional_encoding', type=str, default='False', help='Use random positional encoding?')
+    parser.add_argument('--fr_emb', type=str, default='False', help='Freeze embeddings during training?')
+    parser.add_argument('--fr_att', type=str, default='False', help='Freeze attention weights during training?')
+    parser.add_argument('--type_enc', type=str, default='learned', help='Type of positional encoding (learned/wave/random).')
     parser.add_argument('--skip_residual', type=str, default='False', help='Skip residual connections?')
-    parser.add_argument('--amplitude', type=float, default=1.0, help='Amplitude of positional encoding.')
+    parser.add_argument('--beta', type=float, default=1.0, help='Scaling factor for logits.')
     parser.add_argument('--sigma', type=float, default=1.0, help='Standard deviation for parameter initialization.')
     parser.add_argument('--n_prints', type=int, default=20, help='Number of times to print during training.')
+    parser.add_argument('--nprints_matrices', type=int, default=10, help='Number of times to save matrices during training.')
 
     args = parser.parse_args()
     config = vars(args)
-    for key in ['is_tqdm', 'freeze_embeddings', 'freeze_attention', 'random_positional_encoding', 'skip_residual']:
+    for key in ['is_tqdm', 'fr_emb', 'fr_att', 'skip_residual']:
         config[key] = True if config[key] == 'True' else False
     
     config['rank'] = None if config['rank'] == -1 else int(config['rank'])
     
-    fix_params = { key : config[key] for key in ['rank','d_model','seq_len','dataset_size','random_positional_encoding']}
-    variable_params = { key : config[key] for key in ['batch_size','lr','freeze_embeddings','freeze_attention','skip_residual']}
+
+
+    fix_params = { key : config[key] for key in ['rank','d','L','dataset_size','skip_residual']}
+    variable_params = { key : config[key] for key in ['batch_size','lr','fr_emb','fr_att','type_enc','beta','sigma']}
 
     params = {'fixed' : fix_params,
               'variable': variable_params}
     
     # Rescale learning rate
-    config['lr'] = config['lr'] / (config['d_model']**0.5)
+    config['lr'] = config['lr'] / (config['d']**0.5)
     print('Configuration: ', config)
 
     # Prepare data loaders and tokenizer
@@ -68,25 +71,36 @@ def main():
 
     sequence_fractions = [0.2, 0.4, 0.6, 0.8, 1.0]
 
+
+
     summary = {
+        'evaluation_steps': [],
         'train_loss': [],
         'val_loss': [],
         'entropy': [],
         'part_ratio': [],
-        'sequence_fractions': sequence_fractions,
-        'evaluation_steps': [],
-        'vocab_size': config['vocab_size'],
+        'pos_attended': [],
+        'att_in_fractions': [],
         'embedd_eigvals': [],
-        'embedd_top_tokens': [],
+        'embedd_mean': [],
+        'embedd_std': [],
         'W_eigvals': [],
-        'attention_patterns': [],
-        'norm_W': [],
-        'positional_encodings': []
+        'W_mean': [],
+        'W_std': [],
+        'sequence_fractions': sequence_fractions,
+        'vocab_size': config['vocab_size'],
     }
-
-    data_embeddings = {
+ 
+    data_matrices = {
+        'matrix_steps': [],
+        'A': [],
+        'x': [],
+        'e': [],
+        'tokens_attended': [],
+        'tokens_next': [],
         'embeddings': [],
-        'embeddings_steps': []
+        'embedd_grad_norms': [],
+        'W': [],
     }
 
     for name, param in model.named_parameters():
@@ -100,8 +114,8 @@ def main():
     print_every = max(1,tot_global_steps // nprints)
     global_step = 0
 
-    nprints_embeddings = 10
-    print_embeddings = max(1,tot_global_steps // nprints_embeddings)
+    nprints_matrices = config['nprints_matrices']
+    print_matrices = max(1,tot_global_steps // nprints_matrices)
     # Run training loop
     time_start = time.time()
     for epoch in range(config['num_epochs']):
@@ -130,14 +144,14 @@ def main():
             measure_condition = (global_step % print_every == 0)
             if measure_condition:
                 # train_loss , train_entropy , train_pr = metrics_computations(model, train_dataloader, device, CE_loss,sequence_fractions = sequence_fractions)
-                val_loss , val_entropy , val_pr , a_save , pos_save = metrics_computations(model, val_dataloader, device, CE_loss,sequence_fractions = sequence_fractions)
+                val_loss , val_entropy , val_pr , pos_attended, a_save, a_in_fractions , x_save, e_save, top_k_attended, next_tok = metrics_computations(model, val_dataloader, device, CE_loss,sequence_fractions = sequence_fractions)
+                summary['evaluation_steps'].append(global_step)
                 summary['train_loss'].append(loss.item())
                 summary['val_loss'].append(val_loss)
                 summary['entropy'].append(val_entropy)
                 summary['part_ratio'].append(val_pr)
-                summary['evaluation_steps'].append(global_step)
-                summary['attention_patterns'].append(a_save)
-                summary['positional_encodings'].append(pos_save)
+                summary['pos_attended'].append(pos_attended)
+                summary['att_in_fractions'].append(a_in_fractions)
 
                 # Record gradient norms
                 for name, param in model.named_parameters():
@@ -149,10 +163,13 @@ def main():
                         summary[short_name].append(0.0)
 
                 # Computation with embeddings
-                embeddings = model.input_embeddings.embedding.weight.data.clone()
+                embeddings = model.input_embeddings.embedding.weight.data.clone() # (vocab_size, d_model)
                 eigvals , top_tokens = embeddings_computations(embeddings,tokenizer,m=15,n_tokes=30)
                 summary['embedd_eigvals'].append(eigvals)
-                summary['embedd_top_tokens'].append(top_tokens)
+                summary['embedd_mean'].append( torch.mean(embeddings).item() )
+                summary['embedd_std'].append( torch.std(embeddings).item() )
+
+                # summary['embedd_top_tokens'].append(top_tokens)
                 
                 # Compute and save eigenvalues of W@W^T where W = Wq @ Wk^T 
                 # do it in efficient way
@@ -163,24 +180,48 @@ def main():
                     Wq = model.attention_layer.Wq.weight.data.clone() # (d_model, rank)
                     W = torch.matmul(Wq, Wk.t()) # (d_model, d_model)
 
-                WWT = torch.matmul(W, W.t()) # (d_model, d_model)
+                WWT = torch.matmul(W, W.t())/config['d'] # (d_model, d_model)
                 eigvals_WWT = torch.linalg.eigvalsh(WWT).cpu().numpy()
                 summary['W_eigvals'].append( eigvals_WWT)
-                summary['norm_W'].append( torch.norm(W).item() )
+                summary['W_mean'].append( torch.mean(W).item() )
+                summary['W_std'].append( torch.std(W).item() )
 
 
 
             # Measure embeddings
-            measure_embeddings = (global_step % print_embeddings == 0)
-            if measure_embeddings:
+            # measure_matrices = (global_step % print_matrices == 0) 
+            measure_matrices = global_step in [0,3,5,7,9,11,13,15]  # For quick testing
+            if measure_matrices:
+                data_matrices['matrix_steps'].append(global_step)
+                val_loss , val_entropy , val_pr , pos_attended, a_save, a_in_fractions , x_save, e_save, top_k_attended, next_tok = metrics_computations(model, val_dataloader, device, CE_loss,sequence_fractions = sequence_fractions)
+                data_matrices['A'].append(a_save)
+                data_matrices['x'].append(x_save)
+                data_matrices['e'].append(e_save)
+
+                tokens_attended = [[tokenizer.id_to_token(i) for i in topk] for topk in top_k_attended]  # For first fraction
+                
+                next_token = [tokenizer.id_to_token(i) for i in next_tok]
+                
+                data_matrices['tokens_attended'].append(tokens_attended)
+                data_matrices['tokens_next'].append(next_token)
+
                 embeddings = model.input_embeddings.embedding.weight.data.clone()
-                data_embeddings['embeddings'].append(embeddings.cpu().numpy())
-                data_embeddings['embeddings_steps'].append(global_step)
+                data_matrices['embeddings'].append(embeddings.cpu().numpy())
+
+                W = model.attention_layer.W.weight.data.clone() # (d_model, d_model)
+                data_matrices['W'].append(W.cpu().numpy())
+
+                # Get gradient of embeddings
+                emb_grad = model.input_embeddings.embedding.weight.grad.data.clone() # (vocab_size, d_model)
+                # compute its norm per token
+                emb_grad_norms = torch.norm(emb_grad, dim=1) # (vocab_size)
+                data_matrices['embedd_grad_norms'].append(emb_grad_norms.cpu().numpy())
+                
             global_step += 1
             optimizer.step()
             optimizer.zero_grad()
     
-    data_embeddings['tokens'] = [tokenizer.id_to_token(i) for i in range(config['vocab_size'])]
+    data_matrices['tokens'] = [tokenizer.id_to_token(i) for i in range(config['vocab_size'])]
     
     print('Training completed.')
     print('Total training time (min): ', (time.time() - time_start)/60)
@@ -188,14 +229,17 @@ def main():
 
  
     for key in summary:
-        if key != 'embedd_top_tokens':
-            summary[key] = np.array(summary[key])
-            print(f'{key} : {summary[key].shape}')
+        summary[key] = np.array(summary[key])
+        print(f'{key} : {summary[key].shape}')
 
+    for key in data_matrices:
+        if key != 'tokens' and key != 'tokens_attended' and key != 'tokens_next':
+            data_matrices[key] = np.array(data_matrices[key])
+            print(f'{key} : {data_matrices[key].shape}')
     
-    save_data(summary,'summary',experiment_name='corrected_measurements', params=params)
-    save_data(data_embeddings,'summary_embeddings',experiment_name='corrected_measurements', params=params)
-
+    save_data(summary,'summary',experiment_name='evolution_scalar', params=params)
+    save_data(data_matrices,'summary',experiment_name='evolution_matrices', params=params)
+  
 
 
 if __name__ == "__main__":

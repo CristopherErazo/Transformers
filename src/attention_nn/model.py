@@ -22,7 +22,7 @@ class InputEmbeddings(nn.Module):
     def forward(self, x):
         # (batch, seq_len) --> (batch, seq_len, d_model)
         # Multiply by sqrt(d_model) to scale the embeddings according to the paper
-        return self.embedding(x) * math.sqrt(self.d_model)
+        return self.embedding(x) #* math.sqrt(self.d_model)
     
 class PositionalEncoding(nn.Module):
     """
@@ -31,19 +31,19 @@ class PositionalEncoding(nn.Module):
         d_model (int): dimension of the embeddings
         seq_len (int): maximum sequence length
         dropout (float): dropout rate 
-        amplitude (float): amplitude of the positional encoding
-        random (bool): whether to use random positional encoding
+        type_enc (str): type of positional encoding ('wave' or 'random' or 'learned')
     """
-    def __init__(self, d_model: int, seq_len: int, dropout: float, amplitude: float = 1.0, random: bool = False) -> None:
+    def __init__(self, d_model: int, seq_len: int, dropout: float, type_enc: str = 'wave') -> None:
         super().__init__()
         self.d_model = d_model
         self.seq_len = seq_len
         self.dropout = nn.Dropout(dropout)
-        if random:
+        if type_enc == 'random':
             # Random positional encoding
-            pe = amplitude * torch.randn(1, seq_len, d_model)
+            pe =  torch.randn(1, seq_len, d_model)
             self.register_buffer('pe', pe)
-        else:
+        elif type_enc == 'wave':
+            # Sinusoidal positional encoding
             # Create a matrix of shape (seq_len, d_model)
             pe = torch.zeros(seq_len, d_model)
             # Create a vector of shape (seq_len)
@@ -55,12 +55,17 @@ class PositionalEncoding(nn.Module):
             # Apply cosine to odd indices
             pe[:, 1::2] = torch.cos(position * div_term) # cos(position * (10000 ** (2i / d_model))
             # Add a batch dimension to the positional encoding
-            pe = amplitude * pe.unsqueeze(0) # (1, seq_len, d_model)
+            pe =  pe.unsqueeze(0) # (1, seq_len, d_model)
             # Register the positional encoding as a buffer
             self.register_buffer('pe', pe)
+        elif type_enc == 'learned':
+            # Learned positional encoding
+            self.pe = nn.Parameter(torch.randn(1, seq_len, d_model))
+        else:
+            raise ValueError("type_enc must be 'wave', 'random' or 'learned'")
 
     def forward(self, x):
-        x = x + (self.pe[:, :x.shape[1], :]).requires_grad_(False) # (batch, seq_len, d_model)
+        x = x + self.pe[:, :x.shape[1], :]  # (batch, seq_len, d_model)
         return self.dropout(x)
     
 class AttentionLayer(nn.Module):
@@ -79,7 +84,8 @@ class AttentionLayer(nn.Module):
         self.d_model=d_model
         self.seq_len=seq_len
         self.dropout=nn.Dropout(dropout)
-        
+        # self.norm = torch.sqrt(torch.arange(1,seq_len+1)).view(1,-1,1)
+        # self.register_buffer('norm', torch.sqrt(torch.arange(1,seq_len+1)).view(1,-1,1))
         self.rank = rank
         # If rank is None, use full rank (original behavior) with single matrix W
         if rank is None:
@@ -102,10 +108,10 @@ class AttentionLayer(nn.Module):
         Args:
             x: (batch, seq_len, d_model)
         Returns:
-            attention_scores: (batch, seq_len, seq_len) x.T W x
+            attention_scores: (batch, seq_len, seq_len) x W x.T 
         """
         # x: (batch, seq_len, d_model)
-        attention_scores = x @ self.W.weight @ x.transpose(-2, -1) / math.sqrt(self.d_model)
+        attention_scores = x @ self.W.weight @ x.transpose(-2, -1) /self.d_model #/ math.sqrt(self.d_model)
         # (batch, seq_len, d_model) @ (d_model, d_model) @ (batch, d_model, seq_len) = (batch, seq_len, seq_len)
         return attention_scores 
     
@@ -125,7 +131,7 @@ class AttentionLayer(nn.Module):
         proj_right = self.Wk(x)  # (batch, seq_len, rank)
         
         # Compute attention scores efficiently
-        attention_scores = proj_left @ proj_right.transpose(-2, -1) / math.sqrt(self.rank)
+        attention_scores = proj_left @ proj_right.transpose(-2, -1) / (math.sqrt(self.rank)* self.d_model)
         # (batch, seq_len, rank) @ (batch, rank, seq_len) = (batch, seq_len, seq_len)
         return attention_scores
     
@@ -147,7 +153,7 @@ class AttentionLayer(nn.Module):
         if mask is not None:
             attention_scores = attention_scores.masked_fill(mask == 0, -1e9) 
         
-        attention_probabilities = torch.softmax(attention_scores, dim=-1)  # (batch, seq_len, seq_len)
+        attention_probabilities = torch.softmax(attention_scores,dim=-1)  # (batch, seq_len, seq_len)
         return attention_probabilities
 
     def forward(self,x,mask):
@@ -184,48 +190,48 @@ class Transformer(nn.Module):
     """
     A simple Transformer model with input embeddings, positional encoding, and self-attention.
     Args:
-        d_model (int): dimension of the embeddings
+        d (int): dimension of the embeddings
         vocab_size (int): size of the vocabulary
-        seq_len (int): maximum sequence length
+        L (int): maximum sequence length
         dropout (float): dropout rate
         rank (int): rank for low-rank factorization in attention layer
-        freeze_embeddings (bool): whether to freeze the embeddings during training
-        freeze_attention (bool): whether to freeze the attention weights during training
-        random_positional_encoding (bool): whether to use random positional encoding
+        fr_emb (bool): whether to freeze the embeddings during training
+        fr_att (bool): whether to freeze the attention weights during training
+        type_enc (str): type of positional encoding ('wave' or 'random' or 'learned')
         skip_residual (bool): whether to skip residual connections
-        amplitude (float): amplitude of the positional encoding
+        beta (float): scaling factor for logits
     """
     def __init__(self, 
-                d_model:int, 
+                d:int, 
                 vocab_size:int, 
-                seq_len:int, 
+                L:int, 
                 dropout:float=0.1,
                 rank:int=None,
-                freeze_embeddings:bool=False,
-                freeze_attention:bool=False,
-                random_positional_encoding:bool=False,
+                fr_emb:bool=False,
+                fr_att:bool=False,
+                type_enc:str='wave',
                 skip_residual:bool=False,
-                amplitude:float=1.0
+                beta:float=1.0
                  ) -> None:
         
         super().__init__()
-        self.d_model=d_model
+        self.d=d
         self.vocab_size=vocab_size
-        self.seq_len=seq_len
+        self.L=L
         self.dropout=dropout
         self.rank=rank
-        self.freeze_embeddings=freeze_embeddings
-        self.freeze_attention=freeze_attention
-        self.random_positional_encoding=random_positional_encoding
-        self.skip_residual=skip_residual
-        self.amplitude=amplitude
-        
+        self.fr_emb = fr_emb
+        self.fr_att = fr_att
+        self.type_enc = type_enc
+        self.skip_residual = skip_residual
+        self.beta = beta
 
         # Components
-        self.input_embeddings = InputEmbeddings(d_model,vocab_size,freeze_embeddings)
-        self.positional_encoding = PositionalEncoding(d_model,seq_len,dropout,amplitude,random_positional_encoding)
-        self.attention_layer = AttentionLayer(d_model,seq_len,dropout,rank,freeze_attention)
-        self.residual_connection = ResidualConnection(d_model,dropout,skip_residual)
+        self.input_embeddings = InputEmbeddings(d,vocab_size,fr_emb)
+        self.positional_encoding = PositionalEncoding(d,L,dropout,type_enc)
+        self.attention_layer = AttentionLayer(d,L,dropout,rank,fr_att)
+        self.residual_connection = ResidualConnection(d,dropout,skip_residual)
+        self.projection = nn.Linear(d,vocab_size,bias=False)
 
         
     def forward(self,input_tokens,attention_mask):
@@ -242,10 +248,11 @@ class Transformer(nn.Module):
         x = self.positional_encoding(x)  # (batch, seq_len, d_model)
         a = self.attention_layer(x,attention_mask) # (batch, seq_len, d_model)
         x = self.residual_connection(x, a)  # (batch, seq_len, d_model)
+        # x = self.projection(x)  # (batch, seq_len, vocab_size)
         x = torch.matmul(x, self.input_embeddings.embedding.weight.t()) # (batch, seq_len, vocab_size)
 
-        return x  # Logits: (batch, seq_len, vocab_size)
-    
+        # return self.beta * x / math.sqrt(self.vocab_size)  # Logits: (batch, seq_len, vocab_size)
+        return self.beta * x / math.sqrt(self.d)
 
 def create_model(config: dict) -> Transformer:
     """
@@ -258,12 +265,14 @@ def create_model(config: dict) -> Transformer:
             - seq_len (int): maximum sequence length
             - dropout (float): dropout rate
             - rank (int): rank for low-rank factorization in attention layer
-            - freeze_embeddings (bool): whether to freeze the embeddings during training
-            - freeze_attention (bool): whether to freeze the attention weights during training
+            - fr_emb (bool): whether to freeze the embeddings during training
+            - fr_att (bool): whether to freeze the attention weights during training
             - random_positional_encoding (bool): whether to use random positional encoding
             - skip_residual (bool): whether to skip residual connections
-            - amplitude (float): amplitude of the positional encoding
+            - type_enc (str): type of positional encoding ('wave' or 'random' or 'learned')
+            - beta (float): scaling factor for logits
             - sigma (float): standard deviation for parameter initialization
+
 
 
     Returns:
@@ -274,21 +283,22 @@ def create_model(config: dict) -> Transformer:
     device = torch.device(device)
 
     model = Transformer(
-        d_model=config.get('d_model', 128),
+        d=config.get('d', 512),
         vocab_size=config.get('vocab_size', 1000),
-        seq_len=config.get('seq_len', 50),
-        dropout=config.get('dropout', 0.1),
+        L=config.get('L', 124),
+        dropout=config.get('dropout', 0.0),
         rank=config.get('rank', None),
-        freeze_embeddings=config.get('freeze_embeddings', False),
-        freeze_attention=config.get('freeze_attention', False),
-        random_positional_encoding=config.get('random_positional_encoding', False),
+        fr_emb=config.get('fr_emb', False),
+        fr_att=config.get('fr_att', False),
+        type_enc=config.get('type_enc', 'wave'),
         skip_residual=config.get('skip_residual', False),
-        amplitude=config.get('amplitude', 1.0)
-    ).to(device)
+        beta=config.get('beta', 1.0)
+        ).to(device)
 
     # Initialize the parameters
-    std_init = config.get('sigma',1.0) / (model.d_model ** 0.5)
+    std_init = config.get('sigma',1.0)#/math.sqrt(config.get('d',512))
     for param in model.parameters():
         if param.dim() > 1:
-            torch.nn.init.normal_(param, mean=0.0, std=std_init)    
+            torch.nn.init.normal_(param, mean=0.0, std=std_init)
+            # torch.nn.init.xavier_normal_(param)    
     return model , device

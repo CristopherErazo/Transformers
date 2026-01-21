@@ -1,5 +1,6 @@
 import tqdm
 import torch
+import math
 
 
 def train_epoch(model, iterator, optimizer, device, vocab_size : int, CE_loss , global_step: int):
@@ -268,6 +269,7 @@ def metrics_computations(model, dataloader, device, CE_loss,sequence_fractions =
         tot_loss = 0.0
         running_entropy = torch.zeros(len(sequence_fractions))
         running_pr = torch.zeros(len(sequence_fractions))
+        running_pos_attended = torch.zeros(len(sequence_fractions))
         
         for batch in dataloader:
             input = batch['input'].to(device) # (batch_size, seq_len)
@@ -276,29 +278,72 @@ def metrics_computations(model, dataloader, device, CE_loss,sequence_fractions =
             tokens_len = batch['tokens_len'].to(device) # (batch_size)
             
             # Forward pass step by step to access inner activations
-            x = model.input_embeddings(input)  # (batch_size, seq_len, d_model)
-            pos = model.positional_encoding(x)  # (batch_size, seq_len, d_model)
-            a = model.attention_layer.attention_probabilities(pos, attention_mask)  # (batch_size, seq_len, seq_len)
-            z = a @ pos  # (batch_size, seq_len, d_model)
-            x = model.residual_connection(pos, z)  # (batch_size, seq_len, d_model)
-            logits = torch.matmul(x, model.input_embeddings.embedding.weight.t())  # (batch_size, seq_len, vocab_size)
+            e = model.input_embeddings(input)  # (batch_size, seq_len, d_model)
+            x = model.positional_encoding(e)  # (batch_size, seq_len, d_model)
+            a = model.attention_layer.attention_probabilities(x, attention_mask)  # (batch_size, seq_len, seq_len)
+            y = a @ x  # (batch_size, seq_len, d_model)
+            z = model.residual_connection(x, y)  # (batch_size, seq_len, d_model)
+            # logits = model.beta*model.projection(z)  # (batch_size, seq_len, vocab_size)
+            logits = model.beta*torch.matmul(z, model.input_embeddings.embedding.weight.t())/math.sqrt(model.d) # (batch_size, seq_len, vocab_size)
             
             # Compute CE loss
             loss = CE_loss(logits.view(-1, vocab_size), label.view(-1))
             tot_loss += loss.item()
 
             # Sparsity measures 
-            entropies , prs = sparsity_measure(a, tokens_len, sequence_fractions=sequence_fractions)
+            entropies , prs , position_attended = sparsity_measure(a, tokens_len, sequence_fractions=sequence_fractions)
             running_entropy += torch.tensor(entropies)
             running_pr += torch.tensor(prs)
+            running_pos_attended += torch.tensor(position_attended)
 
   
 
         # Save attention patterns for the maximum token leng
         i_save = torch.argsort(tokens_len, descending=True)[0]
         a_save = a[i_save].cpu().numpy()  # (seq_len, seq_len)  
-        pos_save = pos[i_save].cpu().numpy()  # (seq_len, d_model) 
-    return tot_loss / len(dataloader) , (running_entropy / len(dataloader)).tolist() , (running_pr / len(dataloader)).tolist(), a_save , pos_save
+        x_save = x[i_save].cpu().numpy()  # (seq_len, d_model) 
+        e_save = e[i_save].cpu().numpy()  # (seq_len, d_model)
+
+        # Extract also the attention patterns only at the sequence fractions in sequence_fractions
+        eff_seq_len = min(int(tokens_len[i_save].item()) , a_save.shape[0])
+        idx_of_fractions = [int(eff_seq_len * frac) for frac in sequence_fractions]
+        a_in_fractions = a_save[idx_of_fractions , : ]  # (len(sequence_fractions), seq_len)
+        
+        # For each seq_frac compute the top k tokens attended by the last effective token
+        top_tok_attended = []
+        next_token = []
+        for i, frac in enumerate(sequence_fractions):
+            last_tok_idx = min(int(tokens_len[i_save].item()) , a_save.shape[0])
+            idx = int(last_tok_idx * frac) 
+            # attention_last_token = a_save[idx]  # (seq_len)
+            # topk_indices = attention_last_token.argsort()[-5:][::-1]  # Top-5 indices
+            # tokens_attended = input[i_save, topk_indices].cpu().clone().numpy()  # Corresponding tokens # shape (5)
+            attention_last_token = a_save[idx]  # (seq_len)
+            # Get indices of top-5 attended tokens (descending order)
+            topk_indices = attention_last_token.argsort()[-15:]
+            topk_indices = topk_indices[::-1]  # Ensure positive stride (descending order)
+            # Select the corresponding tokens from input
+            tokens_attended = (input.cpu().numpy())[i_save, topk_indices]
+            # Make contiguous before converting to numpy to avoid negative stride issues
+            # tokens_attended = selected_tokens.contiguous().numpy()  # shape (5)
+            next_tok = label[i_save, idx].cpu().item()
+
+            top_tok_attended.append(tokens_attended)
+            next_token.append(next_tok)
+        # at the end top_tok_attended is a list of arrays of shape (5) , one for each sequence fraction
+        # containig the top-5 tokens attended by the last effective token
+        
+    return (tot_loss / len(dataloader),
+            (running_entropy / len(dataloader)).tolist() ,
+            (running_pr / len(dataloader)).tolist(),
+            (running_pos_attended/len(dataloader)).tolist(),
+            a_save, 
+            a_in_fractions,
+            x_save, 
+            e_save,
+            top_tok_attended,
+            next_token
+            )
 
 
 def sparsity_measure(attention_probs, tokens_len, sequence_fractions = [0.25, 0.5, 0.75, 1.0]):
@@ -318,8 +363,10 @@ def sparsity_measure(attention_probs, tokens_len, sequence_fractions = [0.25, 0.
 
     entropies = []
     prs = []
+    position_attended = []  
+
     for frac in sequence_fractions:
-        idx = (last_token_indices * frac).long()
+        idx = (last_token_indices * frac).long() # (batch_size)
 
         # For each sample in the batch collect the attention weigths of the last effective token
         attention = attention_probs[torch.arange(batch_size), idx, :]  # (batch_size, seq_len)
@@ -333,11 +380,17 @@ def sparsity_measure(attention_probs, tokens_len, sequence_fractions = [0.25, 0.
         # pr = pr / (idx.float() + 1 ) # (batch_size)
         pr = pr.mean()
 
+        # Compute the average position attended
+        pos_attended = torch.arange(seq_len).to(attention.device).unsqueeze(0) * attention  # (1, seq_len) * (batch_size, seq_len) -> (batch_size, seq_len)
+        pos_attended = pos_attended.sum(dim=1)  # (batch_size)
+        pos_attended = pos_attended / (idx.float() + 1 ) # (batch_size)
+        pos_attended = pos_attended.mean()
+
         # Save
         entropies.append(entropy.item())
         prs.append(pr.item())
+        position_attended.append(pos_attended.item())
 
-
-    return entropies , prs
+    return entropies , prs , position_attended
 
 

@@ -35,23 +35,23 @@ class NextTokenDataset(Dataset):
     Dataset for next-token prediction from a single text source.
     
     Each item is a dictionary with:
-        input: (seq_len) tensor of token IDs as model input
-        label: (seq_len) tensor of token IDs as target output
-        attention_mask: (seq_len, seq_len) boolean tensor for attention masking
+        input: (L) tensor of token IDs as model input
+        label: (L) tensor of token IDs as target output
+        attention_mask: (L, L) boolean tensor for attention masking
         text: original text string for debugging
 
     Args:
         raw_dataset: Dataset, object with 'text' field
         tokenizer: Tokenizer, object for tokenizing text
-        seq_len (int): fixed sequence length for input/output
+        L (int): fixed sequence length for input/output
     """
     
-    def __init__(self, raw_dataset, tokenizer:Tokenizer, seq_len:int) -> None:
+    def __init__(self, raw_dataset, tokenizer:Tokenizer, L:int) -> None:
 
         super().__init__()
         self.ds = raw_dataset
         self.tokenizer = tokenizer
-        self.seq_len = seq_len
+        self.L = L
         
         # Get special token IDs
         self.sos_id = tokenizer.token_to_id("[SOS]")
@@ -72,14 +72,14 @@ class NextTokenDataset(Dataset):
             return None
         
         # Truncate if too long (with room for SOS and EOS)
-        max_content_len = self.seq_len - 1
+        max_content_len = self.L - 1
         if len(tokens) > max_content_len:
             tokens = tokens[:max_content_len]
         
         # Create input and target sequences
         # Input: [SOS] + tokens + [PAD]*
         # Target: tokens + [EOS] + [PAD]*
-        num_padding = self.seq_len - len(tokens) - 1
+        num_padding = self.L - len(tokens) - 1
         
         if num_padding < 0:
             raise ValueError(f"Text too long: {len(tokens)} tokens > {max_content_len}")
@@ -99,22 +99,22 @@ class NextTokenDataset(Dataset):
         ])
         
         # pad mask: True for real tokens, False for PAD
-        pad_mask = (input != self.pad_id).unsqueeze(-1)  # ( seq_len, 1) boolean
+        pad_mask = (input != self.pad_id).unsqueeze(-1)  # ( L, 1) boolean
         pad_mask = pad_mask.bool()
 
         # causal mask: lower triangular (allow attend to <= position)
-        causal_mask = torch.tril(torch.ones((self.seq_len, self.seq_len), dtype=torch.bool))  # ( seq_len, seq_len)
+        causal_mask = torch.tril(torch.ones((self.L, self.L), dtype=torch.bool))  # ( L, L)
 
-        # combine to (1, seq_len, seq_len): allow only real tokens and past
-        attention_mask = pad_mask & causal_mask  # (1, seq_len, seq_len), boolean
+        # combine to (1, L, L): allow only real tokens and past
+        attention_mask = pad_mask & causal_mask  # (1, L, L), boolean
             
-        assert input.size(0) == self.seq_len
-        assert label.size(0) == self.seq_len
+        assert input.size(0) == self.L
+        assert label.size(0) == self.L
         
         return {
-            "input": input,                      # (seq_len): context to feed to model
-            "label": label,                      # (seq_len): target next-token sequence
-            "attention_mask": attention_mask,    # (1, seq_len)&( seq_len, seq_len) pad and causal mask 
+            "input": input,                      # (L): context to feed to model
+            "label": label,                      # (L): target next-token sequence
+            "attention_mask": attention_mask,    # (1, L)&( L, L) pad and causal mask 
             "text": text,                        # (str): original text for debugging
             "tokens_len" : len(tokens)                    # (int): length of original tokenized text
         }
@@ -132,7 +132,7 @@ def get_dataloader(config:dict) -> tuple[DataLoader,DataLoader,Tokenizer]:
             - datasource: str, name of the dataset to load (e.g., "roneneldan/TinyStories")
             - dataset_size: int, number of samples to load from the dataset
             - train_fraction: float, fraction of data to use for training
-            - seq_len: int, fixed sequence length for input/output
+            - L: int, fixed sequence length for input/output
             - batch_size: int, batch size for DataLoader
     Returns:
         train_dataloader: DataLoader for training set
@@ -155,8 +155,8 @@ def get_dataloader(config:dict) -> tuple[DataLoader,DataLoader,Tokenizer]:
     raw_val_ds = filter_short(raw_val_ds, tokenizer)
     
     # Create  NextTokenDataset instances
-    train_dataset = NextTokenDataset(raw_train_ds,tokenizer,config['seq_len'])
-    val_dataset = NextTokenDataset(raw_val_ds,tokenizer,config['seq_len'])
+    train_dataset = NextTokenDataset(raw_train_ds,tokenizer,config['L'])
+    val_dataset = NextTokenDataset(raw_val_ds,tokenizer,config['L'])
 
     # Find the maximum length of sentence in the dataset
     max_len = 0
