@@ -57,7 +57,7 @@ class PositionalEncoding(nn.Module):
             # Add a batch dimension to the positional encoding
             pe =  pe.unsqueeze(0) # (1, seq_len, d_model)
             # Register the positional encoding as a buffer
-            self.register_buffer('pe', pe)
+            self.register_buffer('pe', 0.1*pe)
         elif type_enc == 'learned':
             # Learned positional encoding
             self.pe = nn.Parameter(torch.randn(1, seq_len, d_model))

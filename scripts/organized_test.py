@@ -218,7 +218,7 @@ def main():
 
             # Measure embeddings
             measure_matrices = (global_step % print_matrices == 0) 
-            # measure_matrices = global_step in [0,3,5,7,9,11,13,15]  # For quick testing
+            # measure_matrices = global_step in [0,10,20,120,400,500,700]  # For quick testing
             if measure_matrices:
                 data_matrices['matrix_steps'].append(global_step)
                 # Get gradient of embeddings
@@ -269,8 +269,8 @@ def main():
             data_matrices[key] = np.array(data_matrices[key])
             print(f'{key} : {data_matrices[key].shape}')
     
-    save_data(summary,'summary',experiment_name='evolution_scalar', params=params)
-    save_data(data_matrices,'summary',experiment_name='evolution_matrices', params=params)
+    save_data(summary,'summary_Pscaled',experiment_name='evolution_scalar', params=params)
+    save_data(data_matrices,'summary_Pscaled',experiment_name='evolution_matrices', params=params)
   
 
 
