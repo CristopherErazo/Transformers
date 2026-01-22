@@ -57,7 +57,7 @@ class PositionalEncoding(nn.Module):
             # Add a batch dimension to the positional encoding
             pe =  pe.unsqueeze(0) # (1, seq_len, d_model)
             # Register the positional encoding as a buffer
-            self.register_buffer('pe', 0.1*pe)
+            self.register_buffer('pe', 0.5*pe)
         elif type_enc == 'learned':
             # Learned positional encoding
             self.pe = nn.Parameter(torch.randn(1, seq_len, d_model))
@@ -248,8 +248,8 @@ class Transformer(nn.Module):
         x = self.positional_encoding(x)  # (batch, seq_len, d_model)
         a = self.attention_layer(x,attention_mask) # (batch, seq_len, d_model)
         x = self.residual_connection(x, a)  # (batch, seq_len, d_model)
-        # x = self.projection(x)  # (batch, seq_len, vocab_size)
-        x = torch.matmul(x, self.input_embeddings.embedding.weight.t()) # (batch, seq_len, vocab_size)
+        x = self.projection(x)  # (batch, seq_len, vocab_size)
+        # x = torch.matmul(x, self.input_embeddings.embedding.weight.t()) # (batch, seq_len, vocab_size)
 
         # return self.beta * x / math.sqrt(self.vocab_size)  # Logits: (batch, seq_len, vocab_size)
         return self.beta * x / math.sqrt(self.d)

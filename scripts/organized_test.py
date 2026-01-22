@@ -269,8 +269,8 @@ def main():
             data_matrices[key] = np.array(data_matrices[key])
             print(f'{key} : {data_matrices[key].shape}')
     
-    save_data(summary,'summary_Pscaled',experiment_name='evolution_scalar', params=params)
-    save_data(data_matrices,'summary_Pscaled',experiment_name='evolution_matrices', params=params)
+    save_data(summary,'summary_unemb',experiment_name='evolution_scalar', params=params)
+    save_data(data_matrices,'summary_unemb',experiment_name='evolution_matrices', params=params)
   
 
 
