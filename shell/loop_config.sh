@@ -1,28 +1,39 @@
 #!/bin/bash
 
-# Fixed parameters
+# Meta parameters
+is_tqdm=False
+n_prints=50
+nprint_matrices=7
+
+# Fixed Model Parameters
 d=512
 dataset_size=10000
 L=128
 rank=-1
 batch_size=64
-num_epochs=15
-is_tqdm=False
-sigma=0.5
-n_prints=100
-nprint_matrices=7
+num_epochs=10
+
+# Architectural Parameters
 skip_residual=False
+fr_emb=False
+fr_att=False
+
+# Hyperparameters
+beta=1.0
+lr=0.05
 
 
-# Loop over various configurations = ( lr , beta, freeze_embeddings, freeze_attention,type_enc )
+# Loop over various configurations = sigma, amp, type_enc,  unmb
 configurations=(
-    "0.05 1.0 False False learned"
+    "0.1 1.0 wave False" # Unbalanced with wave encodings
+    "0.5 0.5 wave False" # Balanced with wave encodings
+    "0.5 1.0 learned False" # learned encodings
+    "0.5 1.0 learned True" # Learned encodings and untied unembedddings
 )
 
 for config in "${configurations[@]}"; do
-    read -r lr beta fr_emb fr_att type_enc <<< "$config"
-    echo "Running with --lr=$lr --beta=$beta --fr_emb=$fr_emb --fr_att=$fr_att --type_enc=$type_enc"
-
+    read -r  sigma amp type_enc unmb <<< "$config"
+    
     python -u ./scripts/organized_test.py \
         --d $d \
         --dataset_size $dataset_size \
@@ -39,7 +50,9 @@ for config in "${configurations[@]}"; do
         --beta $beta \
         --sigma $sigma \
         --n_prints $n_prints\
-        --nprints_matrices $nprint_matrices
+        --nprints_matrices $nprint_matrices\
+        --amp $amp \
+        --unmb $unmb
 
     echo "Completed: $mode at $(date)"
     echo "---"

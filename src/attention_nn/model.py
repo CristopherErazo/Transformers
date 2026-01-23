@@ -32,8 +32,9 @@ class PositionalEncoding(nn.Module):
         seq_len (int): maximum sequence length
         dropout (float): dropout rate 
         type_enc (str): type of positional encoding ('wave' or 'random' or 'learned')
+        amp (float): amplitude scaling factor for positional encoding if not 'learned'
     """
-    def __init__(self, d_model: int, seq_len: int, dropout: float, type_enc: str = 'wave') -> None:
+    def __init__(self, d_model: int, seq_len: int, dropout: float, type_enc: str = 'wave',amp:float = 1.0) -> None:
         super().__init__()
         self.d_model = d_model
         self.seq_len = seq_len
@@ -41,7 +42,7 @@ class PositionalEncoding(nn.Module):
         if type_enc == 'random':
             # Random positional encoding
             pe =  torch.randn(1, seq_len, d_model)
-            self.register_buffer('pe', pe)
+            self.register_buffer('pe', amp*pe)
         elif type_enc == 'wave':
             # Sinusoidal positional encoding
             # Create a matrix of shape (seq_len, d_model)
@@ -57,7 +58,7 @@ class PositionalEncoding(nn.Module):
             # Add a batch dimension to the positional encoding
             pe =  pe.unsqueeze(0) # (1, seq_len, d_model)
             # Register the positional encoding as a buffer
-            self.register_buffer('pe', 0.5*pe)
+            self.register_buffer('pe', amp*pe)
         elif type_enc == 'learned':
             # Learned positional encoding
             self.pe = nn.Parameter(torch.randn(1, seq_len, d_model))
@@ -200,6 +201,8 @@ class Transformer(nn.Module):
         type_enc (str): type of positional encoding ('wave' or 'random' or 'learned')
         skip_residual (bool): whether to skip residual connections
         beta (float): scaling factor for logits
+        amp (float): amplitude scaling factor for positional encoding if not 'learned'
+        unmb (bool): weather to use different trainable unembedding for last layer or to use transposed embedding matrix
     """
     def __init__(self, 
                 d:int, 
@@ -211,7 +214,9 @@ class Transformer(nn.Module):
                 fr_att:bool=False,
                 type_enc:str='wave',
                 skip_residual:bool=False,
-                beta:float=1.0
+                beta:float=1.0,
+                amp:float=1.0,
+                unmb:bool=False
                  ) -> None:
         
         super().__init__()
@@ -225,15 +230,21 @@ class Transformer(nn.Module):
         self.type_enc = type_enc
         self.skip_residual = skip_residual
         self.beta = beta
+        self.amp = amp
 
         # Components
         self.input_embeddings = InputEmbeddings(d,vocab_size,fr_emb)
-        self.positional_encoding = PositionalEncoding(d,L,dropout,type_enc)
+        self.positional_encoding = PositionalEncoding(d,L,dropout,type_enc,amp)
         self.attention_layer = AttentionLayer(d,L,dropout,rank,fr_att)
         self.residual_connection = ResidualConnection(d,dropout,skip_residual)
-        self.projection = nn.Linear(d,vocab_size,bias=False)
-
         
+        
+        # If unmb is True, create U matrix for unembedding as parameter
+        # else define U as the transpose of the embedding matrix
+        if unmb:
+            self.U_matrix = nn.Parameter(torch.randn(d, vocab_size))
+        else:
+            self.U_matrix = None
     def forward(self,input_tokens,attention_mask):
         """ Forward pass of the Transformer model.
 
@@ -244,15 +255,17 @@ class Transformer(nn.Module):
         Returns:
             logits: (batch, seq_len, vocab_size)"""
         # input_tokens: (batch, seq_len)        
-        x = self.input_embeddings(input_tokens)  # (batch, seq_len, d_model)
-        x = self.positional_encoding(x)  # (batch, seq_len, d_model)
-        a = self.attention_layer(x,attention_mask) # (batch, seq_len, d_model)
-        x = self.residual_connection(x, a)  # (batch, seq_len, d_model)
-        x = self.projection(x)  # (batch, seq_len, vocab_size)
-        # x = torch.matmul(x, self.input_embeddings.embedding.weight.t()) # (batch, seq_len, vocab_size)
-
-        # return self.beta * x / math.sqrt(self.vocab_size)  # Logits: (batch, seq_len, vocab_size)
-        return self.beta * x / math.sqrt(self.d)
+        e = self.input_embeddings(input_tokens)  # (batch, seq_len, d_model)
+        x = self.positional_encoding(e)  # (batch, seq_len, d_model)
+        y = self.attention_layer(x,attention_mask) # (batch, seq_len, d_model)
+        z = self.residual_connection(x, y)  # (batch, seq_len, d_model)
+        if self.U_matrix is not None:  # unmb=True
+            U = self.U_matrix
+        else:  # unmb=False
+            U = self.input_embeddings.embedding.weight.t()
+        logits = torch.matmul(z, U)  # (batch, seq_len, vocab_size)
+        
+        return self.beta * logits / math.sqrt(self.d)
 
 def create_model(config: dict) -> Transformer:
     """
@@ -292,7 +305,9 @@ def create_model(config: dict) -> Transformer:
         fr_att=config.get('fr_att', False),
         type_enc=config.get('type_enc', 'wave'),
         skip_residual=config.get('skip_residual', False),
-        beta=config.get('beta', 1.0)
+        beta=config.get('beta', 1.0),
+        amp=config.get('amp', 1.0),
+        unmb=config.get('unmb', False)
         ).to(device)
 
     # Initialize the parameters

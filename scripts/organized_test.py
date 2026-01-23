@@ -34,18 +34,20 @@ def main():
     parser.add_argument('--sigma', type=float, default=1.0, help='Standard deviation for parameter initialization.')
     parser.add_argument('--n_prints', type=int, default=20, help='Number of times to print during training.')
     parser.add_argument('--nprints_matrices', type=int, default=10, help='Number of times to save matrices during training.')
+    parser.add_argument('--amp', type=float, default=1.0, help='Amplitude scaling factor for positional encoding if not learned.')
+    parser.add_argument('--unmb', type=str, default='False', help='Use separate unembedding matrix?')
 
     args = parser.parse_args()
     config = vars(args)
-    for key in ['is_tqdm', 'fr_emb', 'fr_att', 'skip_residual']:
+    for key in ['is_tqdm', 'fr_emb', 'fr_att', 'skip_residual', 'unmb']:
         config[key] = True if config[key] == 'True' else False
     
     config['rank'] = None if config['rank'] == -1 else int(config['rank'])
     
 
 
-    fix_params = { key : config[key] for key in ['rank','d','L','dataset_size','skip_residual']}
-    variable_params = { key : config[key] for key in ['batch_size','lr','fr_emb','fr_att','type_enc','beta','sigma']}
+    fix_params = { key : config[key] for key in ['rank','d','L','dataset_size','skip_residual','fr_att','fr_emb','batch_size','lr','beta']}
+    variable_params = { key : config[key] for key in ['sigma','type_enc','amp','unmb']}
 
     params = {'fixed' : fix_params,
               'variable': variable_params}
@@ -127,7 +129,10 @@ def main():
     }
 
     for name, param in model.named_parameters():
-        short_name = name.split('.')[-2]
+        if len(name.split('.')) < 2:
+            short_name = name
+        else:   
+            short_name = name.split('.')[-2]
         short_name = f'grad_{short_name}'
         summary[short_name] = []
         print(f'Parameter: {short_name}, Shape: {param.shape}')
@@ -183,7 +188,10 @@ def main():
 
                 # Record gradient norms
                 for name, param in model.named_parameters():
-                    short_name = name.split('.')[-2]
+                    if len(name.split('.')) < 2:
+                        short_name = name
+                    else:   
+                        short_name = name.split('.')[-2]
                     short_name = f'grad_{short_name}'
                     if param.grad is not None:
                         summary[short_name].append(param.grad.data.norm(2).item())
@@ -269,8 +277,8 @@ def main():
             data_matrices[key] = np.array(data_matrices[key])
             print(f'{key} : {data_matrices[key].shape}')
     
-    save_data(summary,'summary_unemb',experiment_name='evolution_scalar', params=params)
-    save_data(data_matrices,'summary_unemb',experiment_name='evolution_matrices', params=params)
+    save_data(summary,'summary',experiment_name='new_evolution_scalar', params=params)
+    save_data(data_matrices,'summary',experiment_name='new_evolution_matrices', params=params)
   
 
 

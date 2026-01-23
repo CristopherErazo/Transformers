@@ -294,10 +294,12 @@ def metrics_computations(model, dataloader, device, CE_loss,data_stats,sequence_
             a = model.attention_layer.attention_probabilities(x, attention_mask)  # (batch_size, seq_len, seq_len)
             y = a @ x  # (batch_size, seq_len, d_model)
             z = model.residual_connection(x, y)  # (batch_size, seq_len, d_model)
-            logits = model.beta*model.projection(z)/math.sqrt(model.d)  # (batch_size, seq_len, vocab_size)
-            # logits = model.beta*torch.matmul(z, model.input_embeddings.embedding.weight.t())/math.sqrt(model.d) # (batch_size, seq_len, vocab_size)
+            if model.U_matrix is not None:  # unmb=True
+                U = model.U_matrix
+            else:  # unmb=False
+                U = model.input_embeddings.embedding.weight.t()
+            logits = model.beta*torch.matmul(z, U)/math.sqrt(model.d)  # (batch, seq_len, vocab_size)            probs = torch.softmax(logits, dim=-1)  # (batch_size, seq_len, vocab_size)
             probs = torch.softmax(logits, dim=-1)  # (batch_size, seq_len, vocab_size)
-
             # Compute CE loss
             loss = CE_loss(logits.view(-1, vocab_size), label.view(-1))
             tot_loss += loss.item()
