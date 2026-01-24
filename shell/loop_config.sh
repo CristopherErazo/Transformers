@@ -3,7 +3,7 @@
 # Meta parameters
 is_tqdm=False
 n_prints=400
-nprint_matrices=7
+nprint_matrices=8
 
 # Fixed Model Parameters
 d=512
@@ -26,9 +26,9 @@ lr=0.05
 # Loop over various configurations = sigma, amp, type_enc,  unmb
 configurations=(
     "0.1 1.0 wave False" # Unbalanced with wave encodings
-    "0.5 0.5 wave False" # Balanced with wave encodings
-    "0.5 1.0 learned False" # learned encodings
-    "0.5 1.0 learned True" # Learned encodings and untied unembedddings
+    # "0.5 0.5 wave False" # Balanced with wave encodings
+    # "0.5 1.0 learned False" # learned encodings
+    # "0.5 1.0 learned True" # Learned encodings and untied unembedddings
 )
 
 for config in "${configurations[@]}"; do
