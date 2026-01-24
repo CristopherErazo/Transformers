@@ -247,7 +247,7 @@ def train_and_write(model, train_iterator, val_iterator, writter, optimizer, dev
 
 
 
-def metrics_computations(model, dataloader, device, CE_loss,data_stats,sequence_fractions = [0.7, 0.8, 0.9, 1.0]):
+def metrics_computations(model, dataloader, device, CE_loss,data_stats, sorted_rank, sequence_fractions = [0.7, 0.8, 0.9, 1.0]):
     """ Compute the validation loss of the model on the given validation data loader.
 
     Args:
@@ -262,6 +262,9 @@ def metrics_computations(model, dataloader, device, CE_loss,data_stats,sequence_
 
     model.eval()
     vocab_size = model.vocab_size
+    num_fractions = len(sequence_fractions)
+
+    fractions_tensor = torch.tensor(sequence_fractions, device=device)  # (num_fractions)
     # If dataloader is a tqdm iterator, disable its progress bar during evaluation
     if isinstance(dataloader, tqdm.tqdm):
         dataloader.disable = True
@@ -273,13 +276,14 @@ def metrics_computations(model, dataloader, device, CE_loss,data_stats,sequence_
 
     with torch.no_grad():
         tot_loss = 0.0
-        running_entropy = torch.zeros(len(sequence_fractions))
-        running_pr = torch.zeros(len(sequence_fractions))
-        running_pos_attended = torch.zeros(len(sequence_fractions))
+        running_entropy = torch.zeros(num_fractions)
+        running_pr = torch.zeros(num_fractions)
+        running_pos_attended = torch.zeros(num_fractions)
         running_pred_entropy = torch.zeros(model.L)
         running_KL_uniform = 0.0
         running_KL_tot = 0.0
         running_KL_mu = 0.0
+        running_average_rank = torch.zeros(num_fractions).to(device)
         
         
         for batch in dataloader:
@@ -287,7 +291,7 @@ def metrics_computations(model, dataloader, device, CE_loss,data_stats,sequence_
             label = batch['label'].to(device) # (batch_size, seq_len)
             attention_mask = batch['attention_mask'].to(device)  # (1, seq_len)&( seq_len, seq_len)
             tokens_len = batch['tokens_len'].to(device) # (batch_size)
-            
+            bs = input.size(0)
             # Forward pass step by step to access inner activations
             e = model.input_embeddings(input)  # (batch_size, seq_len, d_model)
             x = model.positional_encoding(e)  # (batch_size, seq_len, d_model)
@@ -337,6 +341,33 @@ def metrics_computations(model, dataloader, device, CE_loss,data_stats,sequence_
             KL_mu = KL_mu.sum(axis=-1).mean()  # scalar
             running_KL_mu += KL_mu.item()  # Sum over batches
 
+            ##
+            # Compute average rank of attended tokens at different sequence fractions
+            # Compute indices for each batch and each fraction
+            tokens_len_clamped = torch.clamp(tokens_len, max=model.L-1)  # (batch_size)
+           
+            # Shape: (batch_size, num_fractions)
+            idx = (tokens_len_clamped.unsqueeze(1) * fractions_tensor.unsqueeze(0)).long()
+
+            # Prepare batch indices for advanced indexing
+            batch_indices = torch.arange(bs, device=a.device).unsqueeze(1).expand(-1, num_fractions)  # (batch_size, num_fractions)
+
+            # Extract attention weights at the required positions
+            # attn_weights: (batch_size, num_fractions, seq_len)
+            attn_weights = a[batch_indices, idx, :]  # (batch_size, num_fractions, seq_len)
+
+            # Transfor input tensor to ranks with sorter_rank which is a torch tensor of (V, ) already on the correct device
+            # basically sorted_rank[i] gives the rank of token with id i
+            input_ranks = sorted_rank[input]  # (batch_size, seq_len)
+
+            # Multiply attention weights with input ranks to get weighted ranks
+            # attn_ranks: (batch_size, num_fractions, seq_len)
+            average_rank = attn_weights * input_ranks.unsqueeze(1)  # (batch_size, num_fractions, seq_len)
+            average_rank = average_rank.sum(dim=-1).mean(dim=0) # (num_fractions,)
+            
+
+            running_average_rank += average_rank  # Sum over batches
+
         # Save attention patterns for the maximum token leng
         i_save = torch.argsort(tokens_len, descending=True)[0]
         a_save = a[i_save].cpu().numpy()  # (seq_len, seq_len)  
@@ -356,7 +387,8 @@ def metrics_computations(model, dataloader, device, CE_loss,data_stats,sequence_
             a_in_fractions,
             (running_KL_uniform / len(dataloader) ) - math.log(vocab_size),  # KL divergence with uniform distribution
             (running_KL_tot / len(dataloader) ) - H_tot.item(),  # KL divergence with P_tot
-            (running_KL_mu / len(dataloader) ) - H_mu.mean().item()  # KL divergence with P_mu
+            (running_KL_mu / len(dataloader) ) - H_mu.mean().item(),  # KL divergence with P_mu
+            (running_average_rank / len(dataloader)).tolist()  # average rank of attended tokens at different sequence fractions
             )
 
 

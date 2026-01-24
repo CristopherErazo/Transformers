@@ -2,7 +2,7 @@
 
 # Meta parameters
 is_tqdm=False
-n_prints=50
+n_prints=400
 nprint_matrices=7
 
 # Fixed Model Parameters
@@ -11,7 +11,7 @@ dataset_size=10000
 L=128
 rank=-1
 batch_size=64
-num_epochs=10
+num_epochs=40
 
 # Architectural Parameters
 skip_residual=False

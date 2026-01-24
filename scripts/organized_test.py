@@ -78,6 +78,7 @@ def main():
     H_mu = -np.nansum(P_mu * np.log(P_mu+ 1e-12), axis=1)  # (L-1,)
     H_tot = -np.nansum(P_tot * np.log(P_tot + 1e-12)) 
     data_stats = (P_mu, P_tot, H_mu, H_tot)
+    sorted_rank = data_statistics['sorted_rank'] # (V,)
 
     # Set device and build model
     model , device = create_model(config)
@@ -85,7 +86,8 @@ def main():
 
     # Make each data_stats a tensor and send to device
     data_stats = tuple( torch.tensor(arr, dtype=torch.float32).to(device) for arr in data_stats )
-   
+    sorted_rank = torch.tensor(sorted_rank, dtype=torch.long).to(device)
+
     CE_loss = nn.CrossEntropyLoss(ignore_index=pad_id,label_smoothing=0.0)
     optimizer = torch.optim.Adam(model.parameters(),lr=config['lr'],eps=1e-9) 
     # optimizer = torch.optim.SGD(model.parameters(),lr=config['lr'])
@@ -106,6 +108,7 @@ def main():
         'KL_uniform': [],
         'KL_tot': [],
         'KL_mu': [],
+        'average_rank': [],
         'embedd_eigvals': [],
         'embedd_mean': [],
         'embedd_std': [],
@@ -141,9 +144,12 @@ def main():
     nprints = config['n_prints']
     print_every = max(1,tot_global_steps // nprints)
     global_step = 0
+    print_steps = np.unique(np.logspace(-0.01, np.log10(tot_global_steps), num=nprints).astype(int))
 
     nprints_matrices = config['nprints_matrices']
     print_matrices = max(1,tot_global_steps // nprints_matrices)
+    print_steps_matrices = np.unique(np.logspace(-0.01, np.log10(tot_global_steps), num=nprints_matrices).astype(int))
+
     # Run training loop
     time_start = time.time()
     for epoch in range(config['num_epochs']):
@@ -169,10 +175,11 @@ def main():
             if config['is_tqdm'] : batch_iterator.set_postfix({"loss": f"{loss.item():6.3f}"})
 
             # Measure validation loss and sparsity metrics
-            measure_condition = (global_step % print_every == 0)
+            # measure_condition = (global_step % print_every == 0)
+            measure_condition = global_step in print_steps
             if measure_condition:
                 # train_loss , train_entropy , train_pr = metrics_computations(model, train_dataloader, device, CE_loss,sequence_fractions = sequence_fractions)
-                val_loss , val_entropy , val_pr , pos_attended, pred_entropy, a_in_fractions, KL_uni, KL_tot, KL_mu = metrics_computations(model, val_dataloader, device, CE_loss,data_stats,sequence_fractions = sequence_fractions)
+                val_loss , val_entropy , val_pr , pos_attended, pred_entropy, a_in_fractions, KL_uni, KL_tot, KL_mu, average_rank = metrics_computations(model, val_dataloader, device, CE_loss,data_stats,sorted_rank, sequence_fractions = sequence_fractions)
                 summary['evaluation_steps'].append(global_step)
                 summary['train_loss'].append(loss.item())
                 summary['val_loss'].append(val_loss)
@@ -184,6 +191,7 @@ def main():
                 summary['KL_uniform'].append(KL_uni)
                 summary['KL_tot'].append(KL_tot)
                 summary['KL_mu'].append(KL_mu)
+                summary['average_rank'].append(average_rank)
 
 
                 # Record gradient norms
@@ -225,7 +233,8 @@ def main():
 
 
             # Measure embeddings
-            measure_matrices = (global_step % print_matrices == 0) 
+            measure_matrices = global_step in print_steps_matrices
+            # measure_matrices = (global_step % print_matrices == 0) 
             # measure_matrices = global_step in [0,10,20,120,400,500,700]  # For quick testing
             if measure_matrices:
                 data_matrices['matrix_steps'].append(global_step)
@@ -277,8 +286,8 @@ def main():
             data_matrices[key] = np.array(data_matrices[key])
             print(f'{key} : {data_matrices[key].shape}')
     
-    save_data(summary,'summary',experiment_name='new_evolution_scalar', params=params)
-    save_data(data_matrices,'summary',experiment_name='new_evolution_matrices', params=params)
+    save_data(summary,'summary_log',experiment_name='new_evolution_scalar', params=params)
+    save_data(data_matrices,'summary_log',experiment_name='new_evolution_matrices', params=params)
   
 
 
