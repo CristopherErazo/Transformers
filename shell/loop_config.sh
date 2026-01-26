@@ -11,7 +11,7 @@ dataset_size=10000
 L=128
 rank=-1
 batch_size=64
-num_epochs=40
+num_epochs=100
 
 # Architectural Parameters
 skip_residual=False
@@ -21,20 +21,22 @@ fr_att=False
 # Hyperparameters
 beta=1.0
 lr=0.05
+# P='tiny'  # 'uni' for uniform distribution, 'tiny' for TinyStories distribution
 
 
 # Loop over various configurations = sigma, amp, type_enc,  unmb
 configurations=(
     # "0.1 1.0 wave False" # Unbalanced with wave encodings
-    "0.5 0.5 wave False" # Balanced with wave encodings
-    "0.5 1.0 learned False" # learned encodings
-    "0.5 1.0 learned True" # Learned encodings and untied unembedddings
+    # "0.5 0.5 wave False" # Balanced with wave encodings
+    # "0.5 1.0 learned False" # learned encodings
+    "0.5 1.0 learned True tiny" # Learned encodings and untied unembedddings
+    "0.5 1.0 learned True uni" # Learned encodings and untied unembedddings
 )
 
 for config in "${configurations[@]}"; do
-    read -r  sigma amp type_enc unmb <<< "$config"
+    read -r  sigma amp type_enc unmb Pdat <<< "$config"
     
-    python -u ./scripts/organized_test.py \
+    python -u ./scripts/random_data.py \
         --d $d \
         --dataset_size $dataset_size \
         --batch_size $batch_size \
@@ -52,7 +54,9 @@ for config in "${configurations[@]}"; do
         --n_prints $n_prints\
         --nprints_matrices $nprint_matrices\
         --amp $amp \
-        --unmb $unmb
+        --Pdat $Pdat \
+        --unmb $unmb  
+        
 
     echo "Completed: $mode at $(date)"
     echo "---"

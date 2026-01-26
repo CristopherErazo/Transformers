@@ -447,7 +447,7 @@ def get_special_batch(dataloader,L,k=3):
     while num_max_len < k:
         special_batch = next(iter(dataloader))
         seq_lens = special_batch['tokens_len'].numpy()
-        num_max_len = np.sum(seq_lens == L-1)
+        num_max_len = np.sum(seq_lens >= L-1)
 
     # Keep only top k elements in special_batch with the highest token lengths
 

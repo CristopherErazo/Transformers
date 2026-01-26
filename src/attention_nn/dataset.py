@@ -5,6 +5,8 @@ from tokenizers.trainers import WordLevelTrainer
 from tokenizers.pre_tokenizers import Whitespace
 from torch.utils.data import Dataset, DataLoader , random_split
 import torch
+import numpy as np
+
 
 def get_all_sentences(raw_dataset):
     """
@@ -171,4 +173,110 @@ def get_dataloader(config:dict) -> tuple[DataLoader,DataLoader,Tokenizer]:
     train_dataloader = DataLoader(train_dataset,batch_size=config['batch_size'],shuffle=True)
     val_dataloader = DataLoader(val_dataset,batch_size=config['batch_size'],shuffle=True)
     return train_dataloader, val_dataloader , tokenizer
+
+
+
+### Random Dataset
+
+def random_dataset(vocab_size:int, P:np.array, dataset_size:int,seq_len:int) -> list[dict]:
+    """
+    Creates a random dataset of text samples based on a given vocabulary size and probability distribution.
+    Args:
+        vocab_size (int): size of the vocabulary
+        P (np.array): probability distribution over the vocabulary
+        dataset_size (int): number of samples to generate
+        seq_len (int): fixed length of each text sample
+    Returns:
+        list of dict: each dict has a 'text' field with the generated text sample
+    """
+    
+    dataset = []
+    values = np.arange(vocab_size) # to avoid special tokens
+    for _ in range(dataset_size):
+        tokens = np.random.choice(values, size=seq_len+1, p=P)
+        dataset.append(list(tokens))
+    return dataset
+
+class RandomNextTokenDataset(Dataset):
+    """
+    Dataset for next-token prediction from a single text source.
+    
+    Each item is a dictionary with:
+        input: (L) tensor of token IDs as model input
+        label: (L) tensor of token IDs as target output
+        attention_mask: (L, L) boolean tensor for attention masking
+        text: original text string for debugging
+
+    Args:
+        raw_dataset: Dataset, object with 'text' field
+        tokenizer: Tokenizer, object for tokenizing text
+        L (int): fixed sequence length for input/output
+    """
+    
+    def __init__(self, raw_dataset, L:int) -> None:
+
+        super().__init__()
+        self.ds = raw_dataset
+        self.L = L
+    
+    def __len__(self):
+        return len(self.ds)
+    
+    def __getitem__(self, idx):
+        # Token sequence
+        tokens = self.ds[idx]
+        
+        # Input sequence (context): tokens up to L-1 
+        input = torch.tensor(tokens[:-1], dtype=torch.int64)
+        
+        # Target sequence (what we want to predict): shifted by one 
+        label = torch.tensor(tokens[1:], dtype=torch.int64)
+        
+        # causal mask: lower triangular (allow attend to <= position)
+        causal_mask = torch.tril(torch.ones((self.L, self.L), dtype=torch.bool))  # ( L, L)
+  
+        assert input.size(0) == self.L
+        assert label.size(0) == self.L
+        
+        return {
+            "input": input,                      # (L): context to feed to model
+            "label": label,                      # (L): target next-token sequence
+            "attention_mask": causal_mask,    # ( L, L) pad and causal mask 
+            "tokens_len" : len(tokens)                    # (int): length of original tokenized text 
+        }
+    
+
+def get_random_dataloader(config:dict) -> tuple[DataLoader,DataLoader,Tokenizer]:
+    """
+    Creates training and validation DataLoaders from the dataset.
+    Args:
+        config (dict): dictionary with configuration parameters:
+            - vocab_size: int, size of the vocabulary
+            - P: np.array, probability distribution over the vocabulary
+            - dataset_size: int, number of samples to load from the dataset
+            - train_fraction: float, fraction of data to use for training
+            - L: int, fixed sequence length for input/output
+            - batch_size: int, batch size for DataLoader
+    Returns:
+        train_dataloader: DataLoader for training set
+        val_dataloader: DataLoader for validation set
+        tokenizer: Tokenizer object used for tokenization
+    """
+    # Create the dataset
+    raw_dataset = random_dataset(config['vocab_size'], config['P_tokens'], config['dataset_size'], config['L'])
+    
+    # Split dataset into train and validation sets
+    train_size = int(config['train_fraction'] * len(raw_dataset))
+    val_size = len(raw_dataset) - train_size
+    raw_train_ds , raw_val_ds = random_split(raw_dataset,[train_size,val_size])
+    
+ 
+    # Create  NextTokenDataset instances
+    train_dataset = RandomNextTokenDataset(raw_train_ds,config['L'])
+    val_dataset = RandomNextTokenDataset(raw_val_ds,config['L'])
+
+
+    train_dataloader = DataLoader(train_dataset,batch_size=config['batch_size'],shuffle=True)
+    val_dataloader = DataLoader(val_dataset,batch_size=config['batch_size'],shuffle=True)
+    return train_dataloader, val_dataloader
 
