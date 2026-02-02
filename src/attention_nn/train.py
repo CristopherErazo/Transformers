@@ -268,11 +268,13 @@ def metrics_computations(model, dataloader, device, CE_loss,data_stats, sorted_r
     # If dataloader is a tqdm iterator, disable its progress bar during evaluation
     if isinstance(dataloader, tqdm.tqdm):
         dataloader.disable = True
-    P_mu, P_tot, H_mu, H_tot = data_stats
+    P_mu, P_tot, P_bigram, H_mu, H_tot, H_bigram = data_stats
     # P_mu shape (seq_len-1,vocab_size)
     # P_tot shape (vocab_size, )
+    # P_bigram shape (vocab_size, vocab_size)
     # H_mu shape (seq_len-1)
     # H_tot shape ( )
+    # H_bigram shape ()
 
     with torch.no_grad():
         tot_loss = 0.0
@@ -283,6 +285,7 @@ def metrics_computations(model, dataloader, device, CE_loss,data_stats, sorted_r
         running_KL_uniform = 0.0
         running_KL_tot = 0.0
         running_KL_mu = 0.0
+        running_KL_bigram = 0.0 
         running_average_rank = torch.zeros(num_fractions).to(device)
         
         
@@ -322,7 +325,8 @@ def metrics_computations(model, dataloader, device, CE_loss,data_stats, sorted_r
             # Compare output distribution with data statistics:
             # P_mu shape (seq_len-1,vocab_size) -> per position token relative frequency
             # P_tot shape (vocab_size, ) -> token relative frequency of all dataset
-            # Both P_mu and P_tot are torch tensors on the correct device!!
+            # P_bigram shape (vocab_size, vocab_size) -> P(token2 | token1)
+            # Both P_mu, P_tot and P_bigram are torch tensors on the correct device!!
 
             P_model = probs[:,:-1,:] # # (batch_size, seq_len - 1, vocab_size)
             logP_model = torch.where(P_model > 0, torch.log(P_model), 0)
@@ -340,6 +344,13 @@ def metrics_computations(model, dataloader, device, CE_loss,data_stats, sorted_r
             KL_mu = - P_mu[torch.newaxis, :, :] * logP_model  # (batch_size, seq_len - 1, vocab_size)
             KL_mu = KL_mu.sum(axis=-1).mean()  # scalar
             running_KL_mu += KL_mu.item()  # Sum over batches
+
+            # Compare with P_bigram (vocab_size, vocab_size) = P(token2 | token1)
+            # evaluate P_bigram for the input tokens
+            P_bigram_input = P_bigram[input[:, :-1], :]  # (batch_size, seq_len - 1, vocab_size)
+            KL_bigram = - P_bigram_input * logP_model  # (batch_size, seq_len - 1, vocab_size)
+            KL_bigram = KL_bigram.sum(axis=-1).mean()  # scalar
+            running_KL_bigram += KL_bigram.item()  # Sum over batches
 
             ##
             # Compute average rank of attended tokens at different sequence fractions
@@ -388,6 +399,7 @@ def metrics_computations(model, dataloader, device, CE_loss,data_stats, sorted_r
             (running_KL_uniform / len(dataloader) ) - math.log(vocab_size),  # KL divergence with uniform distribution
             (running_KL_tot / len(dataloader) ) - H_tot.item(),  # KL divergence with P_tot
             (running_KL_mu / len(dataloader) ) - H_mu.mean().item(),  # KL divergence with P_mu
+            (running_KL_bigram / len(dataloader) ) - H_bigram.item(),  # KL divergence with P_bigram
             (running_average_rank / len(dataloader)).tolist()  # average rank of attended tokens at different sequence fractions
             )
 

@@ -67,7 +67,7 @@ def main():
     # Load data statistics
     names = ['dataset_size','L']
     params_stats = {k: config[k] for k in names}
-    data_statistics = load_data('token_counts','data_statistics',params=params_stats,base_dir='./data')
+    data_statistics = load_data('token_details','data_statistics',params=params_stats,base_dir='./data')
     for key in data_statistics.keys():
         print(f'{key} : {data_statistics[key].shape}')
     
@@ -75,9 +75,11 @@ def main():
     P_tot = P_mu.sum(axis=0) # (V)
     P_mu /= P_mu.sum(axis=-1,keepdims=True)
     P_tot /= P_tot.sum()
+    P_bigram = data_statistics['conditional_bigram'] # (V,V)
     H_mu = -np.nansum(P_mu * np.log(P_mu+ 1e-12), axis=1)  # (L-1,)
     H_tot = -np.nansum(P_tot * np.log(P_tot + 1e-12)) 
-    data_stats = (P_mu, P_tot, H_mu, H_tot)
+    H_bigram = data_statistics['bigram_entropy'] - H_tot  # Conditional entropy H(token2 | token1)
+    data_stats = (P_mu, P_tot,P_bigram, H_mu, H_tot,H_bigram)
     sorted_rank = data_statistics['sorted_rank'] # (V,)
 
     # Set device and build model
@@ -108,6 +110,7 @@ def main():
         'KL_uniform': [],
         'KL_tot': [],
         'KL_mu': [],
+        'KL_bigram':[],
         'average_rank': [],
         'embedd_eigvals': [],
         'embedd_mean': [],
@@ -128,6 +131,8 @@ def main():
         'embeddings': [],
         'embedd_grad_norms': [],
         'W': [],
+        'p': [],
+        'U': [],
         'special_batch': special_batch
     }
 
@@ -179,7 +184,7 @@ def main():
             measure_condition = global_step in print_steps
             if measure_condition:
                 # train_loss , train_entropy , train_pr = metrics_computations(model, train_dataloader, device, CE_loss,sequence_fractions = sequence_fractions)
-                val_loss , val_entropy , val_pr , pos_attended, pred_entropy, a_in_fractions, KL_uni, KL_tot, KL_mu, average_rank = metrics_computations(model, val_dataloader, device, CE_loss,data_stats,sorted_rank, sequence_fractions = sequence_fractions)
+                val_loss , val_entropy , val_pr , pos_attended, pred_entropy, a_in_fractions, KL_uni, KL_tot, KL_mu, KL_bigram, average_rank = metrics_computations(model, val_dataloader, device, CE_loss,data_stats,sorted_rank, sequence_fractions = sequence_fractions)
                 summary['evaluation_steps'].append(global_step)
                 summary['train_loss'].append(loss.item())
                 summary['val_loss'].append(val_loss)
@@ -191,6 +196,7 @@ def main():
                 summary['KL_uniform'].append(KL_uni)
                 summary['KL_tot'].append(KL_tot)
                 summary['KL_mu'].append(KL_mu)
+                summary['KL_bigram'].append(KL_bigram)
                 summary['average_rank'].append(average_rank)
 
 
@@ -233,7 +239,7 @@ def main():
 
 
             # Measure embeddings
-            measure_matrices = global_step in print_steps_matrices
+            measure_matrices = global_step in print_steps_matrices and config['unmb'] == True
             # measure_matrices = (global_step % print_matrices == 0) 
             # measure_matrices = global_step in [0,10,20,120,400,500,700]  # For quick testing
             if measure_matrices:
@@ -264,6 +270,11 @@ def main():
 
                 W = model.attention_layer.W.weight.data.clone() # (d_model, d_model)
                 data_matrices['W'].append(W.cpu().numpy())
+
+                data_matrices['p'].append(model.positional_encoding.pe.clone().detach().cpu().numpy())
+            
+                
+                data_matrices['U'].append(model.U_matrix.data.clone().detach().cpu().numpy())
 
                 
             global_step += 1
