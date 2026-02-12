@@ -111,6 +111,8 @@ def main():
         'KL_tot': [],
         'KL_mu': [],
         'KL_bigram':[],
+        'KL_M_bigram':[],
+        'KL_M_model': [],
         'average_rank': [],
         'embedd_eigvals': [],
         'embedd_mean': [],
@@ -120,6 +122,8 @@ def main():
         'W_std': [],
         'sequence_fractions': sequence_fractions,
         'vocab_size': config['vocab_size'],
+        'S_means': [],
+        'S_stds': []
     }
  
     data_matrices = {
@@ -184,7 +188,7 @@ def main():
             measure_condition = global_step in print_steps
             if measure_condition:
                 # train_loss , train_entropy , train_pr = metrics_computations(model, train_dataloader, device, CE_loss,sequence_fractions = sequence_fractions)
-                val_loss , val_entropy , val_pr , pos_attended, pred_entropy, a_in_fractions, KL_uni, KL_tot, KL_mu, KL_bigram, average_rank = metrics_computations(model, val_dataloader, device, CE_loss,data_stats,sorted_rank, sequence_fractions = sequence_fractions)
+                val_loss , val_entropy , val_pr , pos_attended, pred_entropy, a_in_fractions, KL_uni, KL_tot, KL_mu, KL_bigram, KL_M_bigram, KL_M_model, average_rank , Smeans , Sstds = metrics_computations(model, val_dataloader, device, CE_loss,data_stats,sorted_rank, sequence_fractions = sequence_fractions)
                 summary['evaluation_steps'].append(global_step)
                 summary['train_loss'].append(loss.item())
                 summary['val_loss'].append(val_loss)
@@ -197,7 +201,11 @@ def main():
                 summary['KL_tot'].append(KL_tot)
                 summary['KL_mu'].append(KL_mu)
                 summary['KL_bigram'].append(KL_bigram)
+                summary['KL_M_bigram'].append(KL_M_bigram)
+                summary['KL_M_model'].append(KL_M_model)
                 summary['average_rank'].append(average_rank)
+                summary['S_means'].append(Smeans)
+                summary['S_stds'].append(Sstds)
 
 
                 # Record gradient norms

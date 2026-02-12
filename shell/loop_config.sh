@@ -2,7 +2,7 @@
 
 # Meta parameters
 is_tqdm=False
-n_prints=100
+n_prints=200
 nprint_matrices=24
 
 
@@ -12,7 +12,7 @@ dataset_size=10000
 L=128
 rank=-1
 batch_size=64
-num_epochs=40
+num_epochs=500
 
 # Architectural Parameters
 skip_residual=False
@@ -25,10 +25,10 @@ lr=0.05
 
 # Loop over various configurations = sigma, amp, type_enc,  unmb
 configurations=(
-    "0.1 1.0 wave False"
-    "0.5 0.5 wave False"
-    "0.5 1.0 learned False" 
-    # "0.5 1.0 learned True"
+    # "0.1 1.0 wave False"
+    # "0.5 0.5 wave False"
+    # "0.5 1.0 learned False" 
+    "0.5 1.0 learned True"
 )
 
 for config in "${configurations[@]}"; do

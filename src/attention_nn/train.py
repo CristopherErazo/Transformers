@@ -286,6 +286,8 @@ def metrics_computations(model, dataloader, device, CE_loss,data_stats, sorted_r
         running_KL_tot = 0.0
         running_KL_mu = 0.0
         running_KL_bigram = 0.0 
+        running_KL_m_gram = 0.0
+        running_KL_m_model = 0.0
         running_average_rank = torch.zeros(num_fractions).to(device)
         
         
@@ -304,7 +306,7 @@ def metrics_computations(model, dataloader, device, CE_loss,data_stats, sorted_r
             if model.U_matrix is not None:  # unmb=True
                 U = model.U_matrix
             else:  # unmb=False
-                U = model.input_embeddings.embedding.weight.t()
+                U = model.input_embeddings.embedding.weight.t() # (d_model, vocab_size)
             logits = model.beta*torch.matmul(z, U)/math.sqrt(model.d)  # (batch, seq_len, vocab_size)            probs = torch.softmax(logits, dim=-1)  # (batch_size, seq_len, vocab_size)
             probs = torch.softmax(logits, dim=-1)  # (batch_size, seq_len, vocab_size)
             # Compute CE loss
@@ -352,6 +354,21 @@ def metrics_computations(model, dataloader, device, CE_loss,data_stats, sorted_r
             KL_bigram = KL_bigram.sum(axis=-1).mean()  # scalar
             running_KL_bigram += KL_bigram.item()  # Sum over batches
 
+            # Compare P_gram  with output distribution based just on embedding and unembedding
+            E = model.input_embeddings.embedding.weight.data.clone() # (vocab_size, d_model)
+            # U = model.input_embeddings.embedding.weight.t() # (d_model, vocab_size)
+            M = E @ U / math.sqrt(model.d)  # (vocab_size, vocab_size)
+            m_logits = M[input[:, :-1], :]  # (batch_size, seq_len - 1, vocab_size)
+            m_probs = torch.softmax(m_logits, dim=-1)  # (batch_size, seq_len - 1, vocab_size)
+            logm_probs = torch.where(m_probs > 0, torch.log(m_probs), 0)
+            KM_m_gram = - P_bigram_input * logm_probs  # (batch_size, seq_len - 1, vocab_size)
+            KM_m_gram = KM_m_gram.sum(axis=-1).mean()  # scalar
+            running_KL_m_gram += KM_m_gram.item()  # Sum over batches
+
+            KL_m_model = P_model * (logP_model - logm_probs)  # (batch_size, seq_len - 1, vocab_size)
+            KL_m_model = KL_m_model.sum(axis=-1).mean()  # scalar
+            running_KL_m_model += KL_m_model.item()  # Sum over batches
+
             ##
             # Compute average rank of attended tokens at different sequence fractions
             # Compute indices for each batch and each fraction
@@ -375,6 +392,9 @@ def metrics_computations(model, dataloader, device, CE_loss,data_stats, sorted_r
             # attn_ranks: (batch_size, num_fractions, seq_len)
             average_rank = attn_weights * input_ranks.unsqueeze(1)  # (batch_size, num_fractions, seq_len)
             average_rank = average_rank.sum(dim=-1).mean(dim=0) # (num_fractions,)
+
+
+           
             
 
             running_average_rank += average_rank  # Sum over batches
@@ -389,6 +409,26 @@ def metrics_computations(model, dataloader, device, CE_loss,data_stats, sorted_r
         idx_of_fractions = [int(eff_seq_len * frac) for frac in sequence_fractions]
         a_in_fractions = a_save[idx_of_fractions , : ]  # (len(sequence_fractions), seq_len)
         
+        # Compute attention scores contributions: xWx , pWp and xWp and pWx
+        if model.rank is None:
+            W = model.attention_layer.W.weight.data.clone() # (d_model, d_model)
+        else:
+            Wk = model.attention_layer.Wk.weight.data.clone() # (d_model, rank)
+            Wq = model.attention_layer.Wq.weight.data.clone() # (d_model, rank)
+            W = torch.matmul(Wq, Wk.t()) # (d_model, d_model)
+
+        #
+        x_b = x[i_save]  # (seq_len, d_model)
+        e_b = e[i_save]  # (seq_len, d_model)
+        p_b = x_b - e_b  # (batch_size, seq_len, d_model)
+        See =  e_b @ W @ e_b.t() / model.d # (seq_len, seq_len)
+        Spp =  p_b @ W @ p_b.t() / model.d  # (seq_len, seq_len)
+        Spq =  p_b @ W @ e_b.t() / model.d  # (seq_len, seq_len)
+        Sqp =  e_b @ W @ p_b.t() / model.d  # (seq_len, seq_len)
+        
+        S_means = [s.mean().item() for s in [See, Spp, Spq, Sqp]]
+        S_stds = [s.std().item() for s in [See, Spp, Spq, Sqp]]        
+
     
     return (tot_loss / len(dataloader),
             (running_entropy / len(dataloader)).tolist() ,
@@ -400,7 +440,11 @@ def metrics_computations(model, dataloader, device, CE_loss,data_stats, sorted_r
             (running_KL_tot / len(dataloader) ) - H_tot.item(),  # KL divergence with P_tot
             (running_KL_mu / len(dataloader) ) - H_mu.mean().item(),  # KL divergence with P_mu
             (running_KL_bigram / len(dataloader) ) - H_bigram.item(),  # KL divergence with P_bigram
-            (running_average_rank / len(dataloader)).tolist()  # average rank of attended tokens at different sequence fractions
+            (running_KL_m_gram / len(dataloader) ) - H_bigram.item(),  # KL divergence with M bi-gram
+            (running_KL_m_model / len(dataloader)), # KL divergence between model and M bi-gram
+            (running_average_rank / len(dataloader)).tolist(),  # average rank of attended tokens at different sequence fractions
+            S_means,
+            S_stds,
             )
 
 

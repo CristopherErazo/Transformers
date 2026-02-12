@@ -3,6 +3,7 @@ Script to set up the configurations for the plots.
 """
 
 import matplotlib.pyplot as plt
+import numpy as np
 
 # Define font sizes
 FONTSIZES = {
@@ -61,3 +62,15 @@ def create_fig(nrows=1,ncols=1,size='single',w=1.0,h=0.5,layout='constrained',sh
     fig , axes = plt.subplots(nrows=nrows,ncols=ncols,figsize=figsize,layout=layout,sharex=sharex,sharey=sharey,gridspec_kw={'width_ratios': w_ratios, 'height_ratios': h_ratios})
     return fig , axes
 
+
+def convert_number(num):
+    if num == 0.0:
+        return r'$0$'
+    else: # put scientific notation as num = r'$a 10^{n}$' for example num=0.00326 return r'3.2 10^{-3}'
+        n = int(np.floor(np.log10(abs(num))))
+        a = num / (10**n)
+        if a == 1.0:
+            return r'$10^{{{}}}$'.format(n)
+        else:
+            return r'${} \cdot 10^{{{}}}$'.format(int(a), n)
+        
